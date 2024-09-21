@@ -1,0 +1,112 @@
+{
+    "tickers": {
+        "assets": {
+            "s&p 500": [
+                "AAPL",
+                "MSFT",
+                "AMZN",
+                "GOOGL",
+                "DIS",
+                "JNJ",
+                "V",
+                "NVDA",
+                "MA",
+                "KO"
+            ],
+            "euro stoxx 50": [
+                "XOM",
+                "VOW3.DE",
+                "OR.PA",
+                "BNP.PA",
+                "BMW.DE",
+                "SIE.DE",
+                "AIR.PA",
+                "MUV2.DE",
+                "ISP.MI",
+                "BAS.DE"
+            ],
+            "nikkei 225": [
+                "7203.T",
+                "6758.T",
+                "9984.T",
+                "7974.T",
+                "8306.T",
+                "8035.T",
+                "8058.T",
+                "7741.T",
+                "9983.T",
+                "6645.T"
+            ],
+            "currency pairs": [
+                "GBPUSD=X",
+                "USDJPY=X",
+                "AUDUSD=X",
+                "EURGBP=X",
+                "EURJPY=X",
+                "EURCHF=X",
+                "EURAUD=X",
+                "USDINR=X",
+                "CHFJPY=X",
+                "USDHKD=X"
+            ],
+            "commodities": [
+                "HG=F",
+                "ZW=F",
+                "KC=F",
+                "CC=F",
+                "CT=F",
+                "LE=F",
+                "PL=F",
+                "PA=F",
+                "ZC=F",
+                "OJ=F"
+            ],
+            "cryptocurrencies": [
+                "BTC-USD",
+                "ETH-USD",
+                "XRP-USD",
+                "ADA-USD",
+                "DOGE-USD",
+                "BNB-USD",
+                "NEAR-USD",
+                "BCH-USD",
+                "LTC-USD",
+                "SOL-USD"
+            ]
+        },
+        "market_data": [
+            "^GSPC",
+            "^IXIC",
+            "^DJI",
+            "^RUT",
+            "^STOXX50E",
+            "^N225",
+            "CL=F",
+            "GC=F",
+            "SI=F",
+            "^DJT",
+            "^VIX",
+            "^TNX",
+            "^IRX",
+            "DX-Y.NYB",
+            "AGG"
+        ]
+    },
+    "general": {
+        "dates": {
+            "validation_peiod": {
+                "start_date": "2019-01-01",
+                "end_date": "2020-01-01"
+            },
+            "test_period": {
+                "start_date": "2020-01-01",
+                "end_date": "2024-01-01"
+            }
+        },
+        "periods": [
+            1,
+            5,
+            22
+        ]
+    }
+}
