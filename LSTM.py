@@ -21,7 +21,7 @@ class LSTM_Model(nn.Module):
                  market_hidden_activation: str,
                  dropout: float,
                  layer_norm: bool = False,
-                 input_size: int = 46,
+                 input_size: int = 49,
                  market_data_size: int = 21,
                  output_size: int = 37
                  ) -> None:
@@ -73,15 +73,17 @@ class LSTM_Model(nn.Module):
 
         # Normalize LSTM stage
         normalized_lstm_output, _ = self.normalize_lstm(x)
-        # (batch_size, seq_len, output_size)
+        normalized_lstm_output = normalized_lstm_output[:, -1, :]
+        # (batch_size,  output_size)
         normalized_output = self.normalize_module(normalized_lstm_output)
-        normalized_output, _ = torch.sort(normalized_output, dim=2)
+        normalized_output, _ = torch.sort(normalized_output, dim=1)
 
         # Apply scaling factor from 's'
-        new_output = s * normalized_output
+        new_output = s.mean(dim=1) * normalized_output
 
         # Market LSTM stage
         market_lstm_output, _ = self.market_lstm(z)
+        market_lstm_output = market_lstm_output[:, -1, :]
         # (batch_size, seq_len, 1)
         estimated_sigma = self.market_module(market_lstm_output)
 
