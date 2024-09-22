@@ -51,6 +51,7 @@ class Dist_Dataset(Dataset):
         self.s = []
         self.z = []
         self.y = []
+        self.cat = []
 
         self.gen_data()
 
@@ -90,6 +91,11 @@ class Dist_Dataset(Dataset):
                     z = x.index
                     y = returns.loc[y_index]
 
+                    cat = [0] * len(self.datas.keys())
+                    cat[list(self.datas.keys()).index(grouping)] = 1
+
+                    self.cat.append(cat)
+
                     self.x.append(x)
                     self.s.append(s)
                     self.z.append(z)
@@ -108,6 +114,11 @@ class Dist_Dataset(Dataset):
         z = torch.tensor(sub_z.values, dtype=torch.float32).to(DEVICE)
         y = torch.tensor(self.y[idx].values, dtype=torch.float32).to(DEVICE).view(-1, 1) * 100
         sy = s * y
+        if not isinstance(self.cat[idx], torch.Tensor):
+            self.cat[idx] = torch.tensor(self.cat[idx], dtype=torch.float32).to(DEVICE)
+        x = torch.cat((x, self.cat[idx].repeat(x.size(0), 1)), dim=1)
+        z = torch.cat((z, self.cat[idx].repeat(z.size(0), 1)), dim=1)
+
         return x, s, z, y, sy
 
 
