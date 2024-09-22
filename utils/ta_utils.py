@@ -4,13 +4,16 @@ import pandas as pd
 from scipy.stats import skew, kurtosis
 
 
-# 1, 5, and 22-day return
 def calculate_return(df, period):
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change(period)
 
-# 1, 5, and 22-day cumulative return
+
+def calculate_log_return(df, period):
+    if period == 1:
+        period = 2
+    return np.log(df['Adj Close'] / df['Adj Close'].shift(period))
 
 
 def calculate_cumulative_return(df, period):
@@ -18,15 +21,11 @@ def calculate_cumulative_return(df, period):
         period = 2
     return (1 + df['Adj Close'].pct_change()).rolling(window=period).apply(np.prod, raw=True) - 1
 
-# 1, 5, and 22-day volatility (standard deviation)
-
 
 def calculate_volatility(df, period):
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).std()
-
-# 1, 5, and 22-day skewness
 
 
 def calculate_skewness(df, period):
@@ -34,27 +33,19 @@ def calculate_skewness(df, period):
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).apply(lambda x: skew(x), raw=True)
 
-# 1, 5, and 22-day kurtosis
-
 
 def calculate_kurtosis(df, period):
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).apply(lambda x: kurtosis(x), raw=True)
 
-# 1, 5, and 22-day simple moving average
-
 
 def calculate_sma(df, period):
     return df['Adj Close'].rolling(window=period).mean()
 
-# 1, 5, and 22-day exponential moving average
-
 
 def calculate_ema(df, period):
     return df['Adj Close'].ewm(span=period, adjust=False).mean()
-
-# 1, 5, and 22-day Relative Strength Index (RSI)
 
 
 def calculate_rsi(df, period):
@@ -70,8 +61,10 @@ def calculate_rsi(df, period):
     loss = np.where(delta < 0, -delta, 0)  # Separate losses
 
     # Calculate the exponential moving averages for gains and losses
-    avg_gain = pd.Series(gain).ewm(span=period, adjust=False).mean().dropna() + 1e-10
-    avg_loss = pd.Series(loss).ewm(span=period, adjust=False).mean().dropna() + 1e-10
+    avg_gain = pd.Series(gain).ewm(
+        span=period, adjust=False).mean().dropna() + 1e-10
+    avg_loss = pd.Series(loss).ewm(
+        span=period, adjust=False).mean().dropna() + 1e-10
 
     # Calculate the Relative Strength (RS)
     rs = avg_gain / avg_loss
@@ -83,17 +76,13 @@ def calculate_rsi(df, period):
     return rsi
 
 
-# 1, 5, and 22-day MACD (Moving Average Convergence Divergence)
-
-
 def calculate_macd(df, period):
     short_ema = calculate_ema(df, 12)  # Standard MACD settings (12-day)
     long_ema = calculate_ema(df, 26)   # Standard MACD settings (26-day)
     macd_line = short_ema - long_ema
-    signal_line = macd_line.ewm(span=9, adjust=False).mean()  # Signal line (9-day)
+    signal_line = macd_line.ewm(
+        span=9, adjust=False).mean()  # Signal line (9-day)
     return macd_line - signal_line
-
-# 1, 5, and 22-day Bollinger Bands
 
 
 def calculate_bollinger_bands(df, period):
@@ -105,8 +94,6 @@ def calculate_bollinger_bands(df, period):
     lower_band = sma - (2 * std)
     return upper_band, lower_band
 
-# 1, 5, and 22-day Stochastic Oscillator
-
 
 def calculate_stochastic_oscillator(df, period):
     if period == 1:
@@ -114,8 +101,6 @@ def calculate_stochastic_oscillator(df, period):
     lowest_low = df['Low'].rolling(window=period).min()
     highest_high = df['High'].rolling(window=period).max()
     return 100 * ((df['Adj Close'] - lowest_low) / (highest_high - lowest_low))
-
-# 1, 5, and 22-day VWAP (Volume-Weighted Average Price)
 
 
 def calculate_vwap(df, period):
@@ -136,16 +121,14 @@ def calculate_vwap(df, period):
     return vwap
 
 
-# 1, 5, and 22-day Sharpe Ratio (using risk-free rate = 0 for simplicity)
-
-
 def calculate_sharpe_ratio(df, period):
     if period == 1:
         period = 2
     returns = df['Adj Close'].pct_change()
     mean_return = returns.rolling(window=period).mean()
     volatility = returns.rolling(window=period).std()
-    return mean_return / volatility  # Simplified Sharpe Ratio (risk-free rate = 0)
+    # Simplified Sharpe Ratio (risk-free rate = 0)
+    return mean_return / volatility
 
 
 def generate_technical_features(df):
@@ -155,8 +138,10 @@ def generate_technical_features(df):
     features = pd.DataFrame(index=df.index)
 
     for period in periods:
-        features[f'return_{period}d'] = calculate_return(df, period)
-        features[f'cumulative_return_{period}d'] = calculate_cumulative_return(df, period)
+        features[f'return_{period}d'] = calculate_log_return(df, period)
+        features[f'simple_return_{period}d'] = calculate_return(df, period)
+        features[f'cumulative_return_{period}d'] = calculate_cumulative_return(
+            df, period)
         features[f'volatility_{period}d'] = calculate_volatility(df, period)
         features[f'skewness_{period}d'] = calculate_skewness(df, period)
         features[f'kurtosis_{period}d'] = calculate_kurtosis(df, period)
@@ -165,15 +150,18 @@ def generate_technical_features(df):
         features[f'rsi_{period}d'] = calculate_rsi(df, period)
         features[f'upper_band_{period}d'], features[f'lower_band_{period}d'] = calculate_bollinger_bands(
             df, period)
-        features[f'stoch_osc_{period}d'] = calculate_stochastic_oscillator(df, period)
+        features[f'stoch_osc_{period}d'] = calculate_stochastic_oscillator(
+            df, period)
         features[f'vwap_{period}d'] = calculate_vwap(df, period)
-        features[f'sharpe_ratio_{period}d'] = calculate_sharpe_ratio(df, period)
+        features[f'sharpe_ratio_{period}d'] = calculate_sharpe_ratio(
+            df, period)
     features[f'macd'] = calculate_macd(df, period)
     features = features.sort_index()
     return features.dropna()
 
 
 if __name__ == "__main__":
-    df = pd.read_csv('data/currency pairs/CHFJPY=X.csv', index_col=0, parse_dates=True)
+    df = pd.read_csv('data/currency pairs/CHFJPY=X.csv',
+                     index_col=0, parse_dates=True)
     df = generate_technical_features(df)
     print(df.tail())

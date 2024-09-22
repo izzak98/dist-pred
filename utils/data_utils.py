@@ -22,7 +22,7 @@ def calculate_volatility_ewma(returns, decay_factor=0.94):
 def cross_sectional_volatility(groupings: list[dict[str, DataFrame]], decay_factor=0.94):
     df_returns = pd.DataFrame()
     for grouping in groupings:
-        df_returns[grouping["asset"]] = grouping["data"]["return_1d"]
+        df_returns[grouping["asset"]] = grouping["data"]["return_2d"]
     stock_volatilities = df_returns.apply(
         lambda returns: calculate_volatility_ewma(returns, decay_factor))
 
@@ -66,7 +66,7 @@ class Dist_Dataset(Dataset):
                                     & set(self.market_data.index))
                 df = df.loc[shared_index]
                 df = df.sort_index()
-                returns = df["return_1d"]
+                returns = df["return_2d"]
                 rolling_mean = df.rolling(window=self.normalization_lookback).mean()
                 rolling_std = df.rolling(window=self.normalization_lookback).std()
                 normalized_df = (df - rolling_mean) / rolling_std
