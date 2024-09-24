@@ -87,7 +87,7 @@ class Dist_Dataset(Dataset):
                         lookforward = len(normalized_df)//2
                     y_index = normalized_df.iloc[lookforward:lookforward*2].index
                     x = normalized_df.iloc[0:lookforward]
-                    s = cross_vol.loc[x.index]
+                    s = cross_vol.loc[x.index].mean()
                     z = x.index
                     y = returns.loc[y_index]
 
@@ -101,7 +101,8 @@ class Dist_Dataset(Dataset):
                     self.z.append(z)
                     self.y.append(y)
 
-                    assert len(x) == len(s) == len(y) == len(z)
+                    assert len(x) == len(y) == len(z)
+                    assert len(s.shape) == 0
                     normalized_df = normalized_df.iloc[lookforward:]
 
     def __len__(self):
@@ -109,11 +110,11 @@ class Dist_Dataset(Dataset):
 
     def __getitem__(self, idx):
         x = torch.tensor(self.x[idx].values, dtype=torch.float32).to(DEVICE)
-        s = torch.tensor(self.s[idx].values, dtype=torch.float32).to(DEVICE).view(-1, 1)
+        s = torch.tensor(self.s[idx], dtype=torch.float32).to(DEVICE).view(-1, 1)
         sub_z = self.market_data.loc[self.z[idx]]
         z = torch.tensor(sub_z.values, dtype=torch.float32).to(DEVICE)
         y = torch.tensor(self.y[idx].values, dtype=torch.float32).to(DEVICE).view(-1, 1) * 100
-        sy = s * y
+        sy = (y/s)/100
         if not isinstance(self.cat[idx], torch.Tensor):
             self.cat[idx] = torch.tensor(self.cat[idx], dtype=torch.float32).to(DEVICE)
         x = torch.cat((x, self.cat[idx].repeat(x.size(0), 1)), dim=1)
@@ -159,14 +160,14 @@ def collate_fn(batch):
     # Pad sequences to max_len
     x_padded = torch.stack([torch.nn.functional.pad(
         seq, (0, 0, 0, max_len - seq.size(0))) for seq in x])
-    s_padded = torch.stack([torch.nn.functional.pad(
-        seq, (0, 0, 0, max_len - seq.size(0))) for seq in s])
     z_padded = torch.stack([torch.nn.functional.pad(
         seq, (0, 0, 0, max_len - seq.size(0))) for seq in z])
     y_padded = torch.stack([torch.nn.functional.pad(
         seq, (0, 0, 0, max_len - seq.size(0))) for seq in y])
     sy_padded = torch.stack([torch.nn.functional.pad(
         seq, (0, 0, 0, max_len - seq.size(0))) for seq in sy])
+    s_padded = torch.stack(s).view(-1, 1)
+    
 
     return x_padded, s_padded, z_padded, y_padded, sy_padded
 

@@ -79,7 +79,7 @@ class LSTM_Model(nn.Module):
         normalized_output, _ = torch.sort(normalized_output, dim=1)
 
         # Apply scaling factor from 's'
-        new_output = s.mean(dim=1) * normalized_output
+        new_output = s * normalized_output
 
         # Market LSTM stage
         market_lstm_output, _ = self.market_lstm(z)
