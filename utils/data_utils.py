@@ -122,6 +122,81 @@ class Dist_Dataset(Dataset):
 
         return x, s, z, y, sy
 
+class StaticDistDataset(Dataset):
+    def __init__(self, datas: dict[str, list[dict[str, DataFrame]]], market_data: DataFrame, normalization_lookback: int, start_date: str, end_date: str):
+        self.datas = datas
+        self.market_data = market_data
+        self.normalization_lookback = normalization_lookback
+        self.start_date = pd.to_datetime(start_date, format="%Y-%m-%d", utc=True)
+        self.end_date = pd.to_datetime(end_date, format="%Y-%m-%d", utc=True)
+        self.x = []
+        self.s = []
+        self.z = []
+        self.y = []
+        self.cat = []
+
+        self.gen_data()
+
+    def gen_data(self):
+        for grouping in self.datas.keys():
+            cross_vol = cross_sectional_volatility(self.datas[grouping])
+            for data in self.datas[grouping]:
+                asset_name = data["asset"]
+                df = data["data"]
+
+                shared_index = list(set(df.index) & set(cross_vol.index)
+                                    & set(self.market_data.index))
+                df = df.loc[shared_index]
+                df = df.sort_index()
+                returns = df["return_2d"]
+                rolling_mean = df.rolling(window=self.normalization_lookback).mean()
+                rolling_std = df.rolling(window=self.normalization_lookback).std()
+                normalized_df = (df - rolling_mean) / rolling_std
+                normalized_df = normalized_df.iloc[self.normalization_lookback:]
+                normalized_df = normalized_df.fillna(0)
+
+                start_date = max(normalized_df.index[0], min(
+                    normalized_df.index, key=lambda x: abs(x - self.start_date)))
+                end_date = min(
+                    normalized_df.index[-1], min(normalized_df.index, key=lambda x: abs(x - self.end_date)))
+
+                normalized_df = normalized_df.loc[start_date:end_date]
+                for i in range(0, len(normalized_df)-22, 22):
+                    date = normalized_df.index[i]
+                    x = normalized_df.loc[date]
+                    s = cross_vol.loc[date]
+                    z = date
+                    y = returns.loc[normalized_df.iloc[i+22].name]
+
+                    cat = [0] * len(self.datas.keys())
+                    cat[list(self.datas.keys()).index(grouping)] = 1
+
+                    self.cat.append(cat)
+
+
+                    self.x.append(x)
+                    self.s.append(s)
+                    self.z.append(z)
+                    self.y.append(y)
+
+
+    def __len__(self):
+        return len(self.x)
+    
+    def __getitem__(self, idx):
+        x = torch.tensor(self.x[idx].values, dtype=torch.float32).to(DEVICE)
+        s = torch.tensor(self.s[idx], dtype=torch.float32).to(DEVICE)
+        sub_z = self.market_data.loc[self.z[idx]]
+        z = torch.tensor(sub_z.values, dtype=torch.float32).to(DEVICE)
+        y = torch.tensor(self.y[idx], dtype=torch.float32).to(DEVICE) * 100
+        sy = (y/s)/100
+        if not isinstance(self.cat[idx], torch.Tensor):
+            self.cat[idx] = torch.tensor(self.cat[idx], dtype=torch.float32).to(DEVICE)
+        x = torch.cat((x, self.cat[idx]))
+        z = torch.cat((z, self.cat[idx]))
+        return x, s.view(1), z, y.view(1), sy.view(1)
+
+                    
 
 class DynamicBatchSampler:
     def __init__(self, dataset, batch_size, num_buckets=10):
@@ -186,12 +261,27 @@ def get_dataset(nomalization_lookback: int, start_date: str, end_date: str):
     dataset = Dist_Dataset(datas, market_data, nomalization_lookback, start_date, end_date)
     return dataset
 
+def get_static_dataset(nomalization_lookback: int, start_date: str, end_date: str):
+    folders = os.listdir('data')
+    folders.pop(folders.index('market_data'))
+    datas = {}
+    for folder in folders:
+        datas[folder] = []
+        for file in os.listdir(os.path.join('data', folder)):
+            data = pd.read_csv(os.path.join('data', folder, file), index_col=0, parse_dates=True)
+            datas[folder].append({"asset": file.split('.')[0], "data": data})
+    market_data = pd.read_csv(os.path.join('data', 'market_data',
+                              'market_data.csv'), index_col=0, parse_dates=True)
+    dataset = StaticDistDataset(datas, market_data, nomalization_lookback, start_date, end_date)
+    return dataset
 
 if __name__ == "__main__":
     from torch.utils.data import DataLoader
-    dataset = get_dataset(100, "2000-01-01", "2021-01-01")
-    batch_sampler = DynamicBatchSampler(dataset, batch_size=32)
-    dataloader = DataLoader(dataset, batch_sampler=batch_sampler, collate_fn=collate_fn)
+    dataset = get_static_dataset(100, "2000-01-01", "2021-01-01")
+    dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
+    # dataset = get_dataset(100, "2000-01-01", "2021-01-01")
+    # batch_sampler = DynamicBatchSampler(dataset, batch_size=32)
+    # dataloader = DataLoader(dataset, batch_sampler=batch_sampler, collate_fn=collate_fn)
 
     for x, s, z, y, sy in dataloader:
         print(x.shape, s.shape, z.shape, y.shape, sy.shape)
