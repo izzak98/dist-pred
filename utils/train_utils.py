@@ -1,5 +1,7 @@
 import torch
 
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 def quantile_loss(y_true, y_pred, tau):
     """
     Calculate the quantile loss for a single quantile.
@@ -52,3 +54,28 @@ class TwoStageQuantileLoss(torch.nn.Module):
         std_loss = aggregate_quantile_loss(y_true_std, y_pred_std, self.taus)
 
         return 0.5 * (raw_loss + std_loss)
+    
+class ComparisonQuantileLoss(torch.nn.Module):
+    def __init__(self, taus):
+        super().__init__()
+        self.register_buffer('taus', torch.tensor(taus).float().to(DEVICE))
+
+    def forward(self, y_pred_raw, y_true_raw):
+        """
+        Calculate the comparison quantile loss.
+
+        Args:
+        y_pred_raw (torch.Tensor): Predicted raw returns (batch_size, num_quantiles)
+        y_true_raw (torch.Tensor): True raw returns (batch_size, 1)
+
+        Returns:
+        torch.Tensor: Comparison quantile loss (batch_size, 1)
+        """
+        # Ensure y_true_raw has the right shape
+        y_true_raw = y_true_raw.expand(-1, y_pred_raw.size(1))
+        
+        diff = y_true_raw - y_pred_raw
+        loss = torch.max(self.taus * diff, (self.taus - 1) * diff)
+        return loss.mean(dim=1, keepdim=True)  # Average over quantiles
+
+    
