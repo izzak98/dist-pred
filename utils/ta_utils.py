@@ -5,14 +5,14 @@ from scipy.stats import skew, kurtosis
 
 
 def calculate_return(df, period):
-    if period == 1:
-        period = 2
+    if period == 2:
+        period = 1
     return df['Adj Close'].pct_change(period)
 
 
 def calculate_log_return(df, period):
-    if period == 1:
-        period = 2
+    if period == 2:
+        period = 1
     return np.log(df['Adj Close'] / df['Adj Close'].shift(period))
 
 

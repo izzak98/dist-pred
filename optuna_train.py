@@ -30,7 +30,8 @@ def train_dense():
         load_if_exists=True,
         sampler=sampler,
         )
-    n_trials = n_trials - len(study.trials)
+    finished_trials = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]
+    n_trials = n_trials - len(finished_trials)
     study.optimize(dense_objective, n_trials=n_trials, n_jobs=1)
     print(study.best_params)
     print(study.best_value)
