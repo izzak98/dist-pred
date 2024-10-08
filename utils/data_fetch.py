@@ -36,6 +36,8 @@ def main() -> None:
     for grouping in config['tickers']['assets'].keys():
         tickers = config['tickers']['assets'][grouping]
         data = fetch_assets(tickers, start_date, end_date)
+        if data.index.tz is not None:
+            data.index = data.index.tz_convert("UTC")
         save_path = os.path.join('data', grouping)
         for ticker in tqdm(tickers, desc=f"Processing {grouping}"):
             df = pd.DataFrame()
