@@ -33,6 +33,9 @@ def cross_sectional_volatility(groupings: list[dict[str, DataFrame]], decay_fact
     cross_sectional_avg_volatility = stock_volatilities.mean(axis=1)
 
     cross_sectional_avg_volatility.index = df_returns.index
+    if cross_sectional_avg_volatility.index.tz is None:
+        cross_sectional_avg_volatility.index = cross_sectional_avg_volatility.index.tz_localize(
+            "UTC")
 
     return cross_sectional_avg_volatility * np.sqrt(252)
 
@@ -48,6 +51,8 @@ class Dist_Dataset(Dataset):
                  ):
         self.datas = datas
         self.market_data = market_data
+        if self.market_data.index.tz is None:
+            self.market_data.index = self.market_data.index.tz_localize("UTC")
         self.start_date = pd.to_datetime(
             start_date, format="%Y-%m-%d", utc=True)
         self.end_date = pd.to_datetime(end_date, format="%Y-%m-%d", utc=True)
@@ -69,6 +74,8 @@ class Dist_Dataset(Dataset):
             for data in self.datas[grouping]:
                 asset_name = data["asset"]
                 df = data["data"]
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
 
                 shared_index = list(set(df.index) & set(cross_vol.index)
                                     & set(self.market_data.index))
@@ -82,7 +89,6 @@ class Dist_Dataset(Dataset):
                 normalized_df = (df - rolling_mean) / rolling_std
                 normalized_df = normalized_df.iloc[self.normalization_lookback:]
                 normalized_df = normalized_df.fillna(0)
-
                 start_date = max(normalized_df.index[0], min(
                     normalized_df.index, key=lambda x: abs(x - self.start_date)))
                 end_date = min(
@@ -144,6 +150,8 @@ class StaticDistDataset(Dataset):
     def __init__(self, datas: dict[str, list[dict[str, DataFrame]]], market_data: DataFrame, normalization_lookback: int, start_date: str, end_date: str):
         self.datas = datas
         self.market_data = market_data
+        if self.market_data.index.tz is None:
+            self.market_data.index = self.market_data.index.tz_localize("UTC")
         self.normalization_lookback = normalization_lookback
         self.start_date = pd.to_datetime(
             start_date, format="%Y-%m-%d", utc=True)
@@ -163,7 +171,8 @@ class StaticDistDataset(Dataset):
             for data in self.datas[grouping]:
                 asset_name = data["asset"]
                 df = data["data"]
-
+                if df.index.tz is None:
+                    df.index = df.index.tz_localize("UTC")
                 shared_index = list(set(df.index) & set(cross_vol.index)
                                     & set(self.market_data.index))
                 df = df.loc[shared_index]
@@ -225,7 +234,7 @@ def get_grouping(outer_dict, inner_str):
         # Iterate over the list of dictionaries
         for inner_dict in list_of_dicts:
             # Check if the inner string is in this inner dictionary
-            if inner_str in inner_dict["asset"]:
+            if inner_str == inner_dict["asset"]:
                 return outer_key
     # Return None or handle the case if not found
     return None
@@ -236,6 +245,8 @@ class TestDataset(Dataset):
         super().__init__()
         self.datas = datas
         self.market_data = market_data
+        if self.market_data.index.tz is None:
+            self.market_data.index = self.market_data.index.tz_localize("UTC")
         self.normalization_lookback = normalization_lookback
         self.start_date = pd.to_datetime(
             start_date, format="%Y-%m-%d", utc=True)
@@ -270,6 +281,8 @@ class TestDataset(Dataset):
 
         data = [asset for asset in self.datas[grouping]
                 if asset["asset"] == self.main_asset][0]["data"]
+        if data.index.tz is None:
+            data.index = data.index.tz_localize("UTC")
 
         shared_index = list(set(data.index) & set(cross_vol.index)
                             & set(self.market_data.index))
@@ -441,7 +454,7 @@ def get_test_synthetic_dataset(dense_normalization_lookback: int,
 
     synthetic_dfs, market_datas = generate_synthetic_data(
         num_periods, target_correlation, n_assets, n_market_assets)
-    
+
     datas = {"synthetic": []}
     folders = os.listdir('data')
     folders.pop(folders.index('market_data'))
@@ -455,7 +468,7 @@ def get_test_synthetic_dataset(dense_normalization_lookback: int,
         datas, market_data, dense_normalization_lookback, "2020-01-01", "2021-01-01", 22)
     lstm_dataset = TestDataset(
         datas, market_data, lstm_normalization_lookback, "2020-01-01", "2021-01-01", 22)
-    
+
     return dense_dataset, lstm_dataset
 
 
@@ -463,15 +476,16 @@ if __name__ == "__main__":
     from torch.utils.data import DataLoader
     # dataset = get_static_dataset(100, "2000-01-01", "2021-01-01")
     # dataloader = DataLoader(dataset, batch_size=32, shuffle=True)
-    # dataset = get_dataset(100, "2000-01-01", "2021-01-01", 22)
+    dataset = get_dataset(100, "2000-01-01", "2021-01-01", 22)
     # batch_sampler = DynamicBatchSampler(dataset, batch_size=32)
     # dataloader = DataLoader(dataset, batch_sampler=batch_sampler, collate_fn=collate_fn)
 
-    # dataset = get_test_dataset(100, "2000-01-01", "2021-01-01", 22)
-    # dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
-
-    dataset = get_test_synthetic_dataset(100, 1000, 0.5)
+    dataset = get_test_dataset(100, "2000-01-01", "2021-01-01", 22)
+    dataset.set_main_asset("V")
     dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
+
+    # dataset = get_test_synthetic_dataset(100, 1000, 0.5)
+    # dataloader = DataLoader(dataset, batch_size=32, shuffle=False)
 
     for x, s, z, y, sy in dataloader:
         print(x.shape, s.shape, z.shape, y.shape, sy.shape)
