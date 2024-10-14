@@ -1,9 +1,10 @@
+"""Module for distribution utilities."""
 import numpy as np
-import matplotlib.pyplot as plt
+from numpy import ndarray
 from sklearn.neighbors import KernelDensity
 
 
-def quantiles_to_pdf_kde(quantiles, grid_points=200, bandwidth=0.01):
+def quantiles_to_pdf_kde(quantiles, grid_points=200, bandwidth=0.01) -> tuple[ndarray, ndarray, ndarray]:
     """
     Convert quantiles to a probability density function (PDF) using Kernel Density Estimation (KDE).
 

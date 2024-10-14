@@ -1,0 +1,8 @@
+pandas==2.2.2
+yfinance==0.2.43
+tqdm==4.66.5
+numpy==2.1.1
+scikit-learn==1.5.2
+matplotlib==3.9.2
+optuna==4.0.0
+scipy==1.14.1

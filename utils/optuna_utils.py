@@ -1,15 +1,17 @@
+"""Module to load the best model from the Optuna study."""
+from typing import Union, Any
 import optuna
-import torch
 from LSTM import LSTM_Model
 from Dense import QuantileDense
 
-def load_best_model(model_name):
+
+def load_best_model(model_name) -> tuple[Union[LSTM_Model, QuantileDense], dict[str, Any]]:
     """
     Fetch the best parameters from the Optuna study and load the specified model.
-    
+
     Args:
     model_name (str): Name of the model to load. Either 'lstm' or 'dense'.
-    
+
     Returns:
     model: The loaded model with best parameters.
     best_params (dict): The best parameters found by Optuna.
@@ -31,20 +33,24 @@ def load_best_model(model_name):
         model = LSTM_Model(
             lstm_layers=best_params['raw_lstm_layers'],
             lstm_h=best_params['raw_lstm_h'],
-            hidden_layers=[best_params[f'raw_hidden_layer_{i}'] for i in range(best_params['raw_hidden_layers'])],
+            hidden_layers=[best_params[f'raw_hidden_layer_{i}']
+                           for i in range(best_params['raw_hidden_layers'])],
             hidden_activation=best_params['hidden_activation'],
             market_lstm_layers=best_params['market_lstm_layers'],
             market_lstm_h=best_params['market_lstm_h'],
-            market_hidden_layers=[best_params[f'market_hidden_layer_{i}'] for i in range(best_params['market_hidden_layers'])],
+            market_hidden_layers=[best_params[f'market_hidden_layer_{i}'] for i in range(
+                best_params['market_hidden_layers'])],
             market_hidden_activation=best_params['market_activation'],
             dropout=best_params['dropout'],
             layer_norm=best_params['use_layer_norm']
         )
     else:  # Dense model
         model = QuantileDense(
-            raw_hidden_layers=[best_params[f'raw_hidden_layer_{i}'] for i in range(best_params['n_raw_hidden_layers'])],
+            raw_hidden_layers=[best_params[f'raw_hidden_layer_{i}']
+                               for i in range(best_params['n_raw_hidden_layers'])],
             hidden_activation=best_params['hidden_activation'],
-            market_hidden_layers=[best_params[f'market_hidden_layer_{i}'] for i in range(best_params['n_market_hidden_layers'])],
+            market_hidden_layers=[best_params[f'market_hidden_layer_{i}'] for i in range(
+                best_params['n_market_hidden_layers'])],
             market_activation=best_params['market_activation'],
             dropout=best_params['dropout'],
             layer_norm=best_params['layer_norm']
@@ -52,10 +58,10 @@ def load_best_model(model_name):
 
     return model, best_params
 
-# Example usage
+
 if __name__ == "__main__":
     lstm_model, lstm_params = load_best_model('lstm')
     print("LSTM Best Parameters:", lstm_params)
-    
+
     dense_model, dense_params = load_best_model('dense')
     print("Dense Best Parameters:", dense_params)
