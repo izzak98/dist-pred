@@ -1,15 +1,50 @@
+"""LSTM model for quantile regression."""
+import json
 import torch
 import torch.nn as nn
 from torch.utils.data import DataLoader
-from tqdm import tqdm
+from torch import Tensor
 
 from utils.train_utils import TwoStageQuantileLoss as FullQuantileLoss
+from utils.train_utils import train
 from utils.data_utils import collate_fn, DynamicBatchSampler, get_dataset
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
+with open("config.json", "r", encoding="utf-8") as file:
+    CONFIG = json.load(file)
+
 
 class LSTM_Model(nn.Module):
+    """
+    LSTM model for quantile regression.
+
+    Parameters:
+        lstm_layers (int): Number of LSTM layers for the normalization module.
+        lstm_h (int): Number of hidden units in the LSTM layers.
+        hidden_layers (list[int]): Number of units in each hidden layer for the
+        normalization module.
+        hidden_activation (str): Activation function for hidden layers in the normalization module.
+        market_lstm_layers (int): Number of LSTM layers for the market module.
+        market_lstm_h (int): Number of hidden units in the LSTM layers for the market module.
+        market_hidden_layers (list[int]): Number of units in each hidden layer
+        for the market module.
+        market_hidden_activation (str): Activation function for hidden layers in the market module.
+        dropout (float): Dropout rate.
+        layer_norm (bool): Whether to use layer normalization.
+        input_size (int): Number of features in the raw data.
+        market_data_size (int): Number of features in the market data.
+
+    Inputs:
+        x (torch.Tensor): Input tensor of raw data.
+        s (torch.Tensor): Input tensor of standardized data.
+        z (torch.Tensor): Input tensor of market data.
+
+    Returns:
+        normalized_output (torch.Tensor): Normalized output tensor.
+        raw_output (torch.Tensor): Raw output tensor.
+    """
+
     def __init__(self,
                  lstm_layers: int,
                  lstm_h: int,
@@ -41,7 +76,7 @@ class LSTM_Model(nn.Module):
         self.market_module = self._build_module(
             market_lstm_h, market_hidden_layers, 1, market_hidden_activation)
 
-    def _build_module(self, input_size, hidden_layers, output_size, activation):
+    def _build_module(self, input_size, hidden_layers, output_size, activation) -> nn.Sequential:
         layers = []
         for i, neurons in enumerate(hidden_layers):
             layers.append(nn.Linear(input_size if i ==
@@ -54,7 +89,7 @@ class LSTM_Model(nn.Module):
         layers.append(nn.Linear(hidden_layers[-1], output_size))
         return nn.Sequential(*layers)
 
-    def _get_activation(self, activation: str):
+    def _get_activation(self, activation: str) -> nn.Module:
         activations = {
             "relu": nn.ReLU(),
             "tanh": nn.Tanh(),
@@ -66,7 +101,8 @@ class LSTM_Model(nn.Module):
             raise ValueError(f"Activation {activation} not supported")
         return activations[activation]
 
-    def forward(self, x, s, z):
+    def forward(self, x, s, z) -> tuple[Tensor, Tensor]:
+        """Forward pass."""
         # x: (batch_size, seq_len, input_size)
         # s: (batch_size, seq_len, 1)
         # z: (batch_size, seq_len, market_data_size)
@@ -93,80 +129,12 @@ class LSTM_Model(nn.Module):
         return normalized_output, raw_output
 
 
-def validate(model, val_loader, criterion):
-    model.eval()
-    total_loss = 0.0
-    with torch.no_grad():
-        running_len = 0
-        for x, s, z, y, sy in val_loader:
-            normalized_output, raw_output = model(x, s, z)
-            loss = criterion(raw_output, y, normalized_output, sy)
-            total_loss += loss.item()
-            running_len += len(x)
-    return total_loss / running_len
-
-
-def train(model, train_loader, val_loader, criterion, optimizer, num_epochs, patience, l1_reg, verbose=True):
-    best_loss = float('inf')
-    n_no_improve = 0
-    best_weights = None
-    for epoch in range(num_epochs):
-        model.train()
-        total_loss = 0.0
-        if verbose:
-            p_bar = tqdm(train_loader, desc=f"Epoch {epoch+1}", leave=False)
-        else:
-            p_bar = train_loader
-        running_len = 0
-        for x, s, z, y, sy in p_bar:
-            optimizer.zero_grad()
-            normalized_output, raw_output = model(x, s, z)
-            loss = criterion(raw_output, y, normalized_output, sy)
-
-            # Add L1 regularization
-            l1_loss = 0
-            for param in model.parameters():
-                l1_loss += torch.sum(torch.abs(param))
-            loss += l1_reg * l1_loss
-
-            loss.backward()
-            optimizer.step()
-            total_loss += loss.item()
-            running_len += len(x)
-            if verbose:
-                p_bar.set_postfix({'loss': total_loss / running_len})
-
-        val_loss = validate(model, val_loader, criterion)
-
-        out = (
-            f"Epoch {epoch+1}, "
-            f"Train Loss: {total_loss / running_len:.6f}, "
-            f"Val Loss: {val_loss:.6f}"
-        )
-        if val_loss < best_loss:
-            best_loss = val_loss
-            n_no_improve = 0
-            best_weights = model.state_dict()
-        else:
-            n_no_improve += 1
-            if n_no_improve >= patience:
-                out += f"\nEarly stopping at epoch {epoch+1}"
-                if verbose:
-                    print(out)
-                break
-        if verbose:
-            print(out)
-
-    if best_weights is not None:
-        model.load_state_dict(best_weights)
-    return best_loss, model
-
-
-def objective(trial):
+def objective(trial) -> float:
+    """objective function for Optuna optimization."""
     batch_size = trial.suggest_categorical(
         "batch_size", [32, 64, 128, 256, 512, 1024, 2048])
     learning_rate = trial.suggest_float("learning_rate", 1e-6, 1e-3, log=True)
-    normalazation_window = trial.suggest_int("normalazation_window", 5, 250)
+    normalization_window = trial.suggest_int("normalazation_window", 5, 250)
     raw_lstm_layers = trial.suggest_int("raw_lstm_layers", 1, 5)
     raw_lstm_h = trial.suggest_categorical(
         "raw_lstm_h", [16, 32, 64, 128, 256])
@@ -212,11 +180,12 @@ def objective(trial):
     )
     model.to(DEVICE)
     model.compile()
-    print(
-        f"Model at trial has {sum(p.numel() for p in model.parameters() if p.requires_grad)} parameters")
+
+    validation_start_date = CONFIG["general"]["dates"]["validation_period"]["start_date"]
+    validation_end_date = CONFIG["general"]["dates"]["validation_period"]["end_date"]
     train_dataset = get_dataset(
-        normalazation_window, "1998-01-01", "2018-01-01")
-    val_dataset = get_dataset(normalazation_window, "2018-01-01", "2019-01-01")
+        normalization_window, "1998-01-01", validation_start_date)
+    val_dataset = get_dataset(normalization_window, validation_start_date, validation_end_date)
     train_batch_sampler = DynamicBatchSampler(
         train_dataset, batch_size=batch_size)
     val_batch_sampler = DynamicBatchSampler(val_dataset, batch_size=batch_size)
@@ -226,11 +195,7 @@ def objective(trial):
     val_loader = DataLoader(
         val_dataset, batch_sampler=val_batch_sampler, collate_fn=collate_fn)
 
-    quantiles = [
-        0.00005, 0.00025, 0.00075, 0.00125, 0.00175, 0.0025, 0.005, 0.01, 0.015, 0.02, 0.03,
-        0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7,
-        0.75, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99, 0.995, 0.9975, 0.99925, 0.99975, 0.99995
-    ]
+    quantiles = CONFIG["general"]["quantiles"]
 
     loss_fn = FullQuantileLoss(quantiles)
 
@@ -250,7 +215,8 @@ def objective(trial):
     return best_loss
 
 
-if __name__ == "__main__":
+def test_functionality() -> None:
+    """Test the functionality of the model."""
     model_test_params = {
         "lstm_layers": 1,
         "lstm_h": 16,
@@ -263,7 +229,7 @@ if __name__ == "__main__":
         "dropout": 0.0,
         "layer_norm": True
     }
-    normalazation_window = 100
+    normalization_window = 100
     batch_size = 1024
     learning_rate = 1e-3
     l1_reg = 0.2
@@ -272,9 +238,11 @@ if __name__ == "__main__":
     model = LSTM_Model(**model_test_params)
     model.to(DEVICE)
 
+    validation_start_date = CONFIG["general"]["dates"]["validation_period"]["start_date"]
+    validation_end_date = CONFIG["general"]["dates"]["validation_period"]["end_date"]
     train_dataset = get_dataset(
-        normalazation_window, "1998-01-01", "2018-01-01")
-    val_dataset = get_dataset(normalazation_window, "2018-01-01", "2019-01-01")
+        normalization_window, "1998-01-01", validation_start_date)
+    val_dataset = get_dataset(normalization_window, validation_start_date, validation_end_date)
     train_batch_sampler = DynamicBatchSampler(
         train_dataset, batch_size=batch_size)
     val_batch_sampler = DynamicBatchSampler(val_dataset, batch_size=batch_size)
@@ -284,17 +252,13 @@ if __name__ == "__main__":
     val_loader = DataLoader(
         val_dataset, batch_sampler=val_batch_sampler, collate_fn=collate_fn)
 
-    quantiles = [
-        0.00005, 0.00025, 0.00075, 0.00125, 0.00175, 0.0025, 0.005, 0.01, 0.015, 0.02, 0.03,
-        0.05, 0.1, 0.15, 0.2, 0.25, 0.3, 0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7,
-        0.75, 0.8, 0.85, 0.9, 0.95, 0.98, 0.99, 0.995, 0.9975, 0.99925, 0.99975, 0.99995
-    ]
+    quantiles = CONFIG["general"]["quantiles"]
 
     loss_fn = FullQuantileLoss(quantiles)
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=learning_rate, weight_decay=l2_reg)
-    best_loss, _ = train(
+    _, _ = train(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -305,3 +269,7 @@ if __name__ == "__main__":
         l1_reg=l1_reg,
         verbose=True
     )
+
+
+if __name__ == "__main__":
+    test_functionality()

@@ -1,54 +1,64 @@
+"""Module for generating technical analysis features."""
 import json
 import numpy as np
 import pandas as pd
+from pandas import DataFrame, Series
 from scipy.stats import skew, kurtosis
 
 
-def calculate_return(df, period):
+def calculate_return(df, period) -> Series:
+    """Calculate the simple return over a given period."""
     if period == 2:
         period = 1
     return df['Adj Close'].pct_change(period)
 
 
-def calculate_log_return(df, period):
+def calculate_log_return(df, period) -> Series:
+    """Calculate the log return over a given period."""
     if period == 2:
         period = 1
     return np.log(df['Adj Close'] / df['Adj Close'].shift(period))
 
 
-def calculate_cumulative_return(df, period):
+def calculate_cumulative_return(df, period) -> Series:
+    """Calculate the cumulative return over a given period."""
     if period == 1:
         period = 2
     return (1 + df['Adj Close'].pct_change()).rolling(window=period).apply(np.prod, raw=True) - 1
 
 
-def calculate_volatility(df, period):
+def calculate_volatility(df, period) -> Series:
+    """Calculate the rolling standard deviation of returns over a given period."""
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).std()
 
 
-def calculate_skewness(df, period):
+def calculate_skewness(df, period) -> Series:
+    """Calculate the skewness of returns over a given period."""
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).apply(lambda x: skew(x), raw=True)
 
 
-def calculate_kurtosis(df, period):
+def calculate_kurtosis(df, period) -> Series:
+    """Calculate the kurtosis of returns over a given period."""
     if period == 1:
         period = 2
     return df['Adj Close'].pct_change().rolling(window=period).apply(lambda x: kurtosis(x), raw=True)
 
 
-def calculate_sma(df, period):
+def calculate_sma(df, period) -> Series:
+    """Calculate the Simple Moving Average (SMA) over a given period."""
     return df['Adj Close'].rolling(window=period).mean()
 
 
-def calculate_ema(df, period):
+def calculate_ema(df, period) -> Series:
+    """Calculate the Exponential Moving Average (EMA) over a given period."""
     return df['Adj Close'].ewm(span=period, adjust=False).mean()
 
 
-def calculate_rsi(df, period):
+def calculate_rsi(df, period) -> Series:
     """
     Calculate the Relative Strength Index (RSI) over a given period.
 
@@ -61,9 +71,9 @@ def calculate_rsi(df, period):
     loss = np.where(delta < 0, -delta, 0)  # Separate losses
 
     # Calculate the exponential moving averages for gains and losses
-    avg_gain = pd.Series(gain).ewm(
+    avg_gain = Series(gain).ewm(
         span=period, adjust=False).mean().dropna() + 1e-10
-    avg_loss = pd.Series(loss).ewm(
+    avg_loss = Series(loss).ewm(
         span=period, adjust=False).mean().dropna() + 1e-10
 
     # Calculate the Relative Strength (RS)
@@ -76,7 +86,8 @@ def calculate_rsi(df, period):
     return rsi
 
 
-def calculate_macd(df, period):
+def calculate_macd(df) -> Series:
+    """Calculate the Moving Average Convergence Divergence (MACD) over a given period."""
     short_ema = calculate_ema(df, 12)  # Standard MACD settings (12-day)
     long_ema = calculate_ema(df, 26)   # Standard MACD settings (26-day)
     macd_line = short_ema - long_ema
@@ -85,7 +96,8 @@ def calculate_macd(df, period):
     return macd_line - signal_line
 
 
-def calculate_bollinger_bands(df, period):
+def calculate_bollinger_bands(df, period) -> tuple[Series, Series]:
+    """Calculate the Bollinger Bands over a given period."""
     if period == 1:
         period = 2
     sma = calculate_sma(df, period)
@@ -95,7 +107,8 @@ def calculate_bollinger_bands(df, period):
     return upper_band, lower_band
 
 
-def calculate_stochastic_oscillator(df, period):
+def calculate_stochastic_oscillator(df, period) -> Series:
+    """Calculate the Stochastic Oscillator over a given period."""
     if period == 1:
         period = 2
     lowest_low = df['Low'].rolling(window=period).min()
@@ -103,7 +116,7 @@ def calculate_stochastic_oscillator(df, period):
     return 100 * ((df['Adj Close'] - lowest_low) / (highest_high - lowest_low))
 
 
-def calculate_vwap(df, period):
+def calculate_vwap(df, period) -> Series:
     """
     Calculate the Volume-Weighted Average Price (VWAP) over a given period.
 
@@ -121,7 +134,8 @@ def calculate_vwap(df, period):
     return vwap
 
 
-def calculate_sharpe_ratio(df, period):
+def calculate_sharpe_ratio(df, period) -> Series:
+    """Calculate the Sharpe Ratio over a given period."""
     if period == 1:
         period = 2
     returns = df['Adj Close'].pct_change()
@@ -131,8 +145,9 @@ def calculate_sharpe_ratio(df, period):
     return mean_return / volatility
 
 
-def generate_technical_features(df):
-    with open('config.json') as f:
+def generate_technical_features(df) -> DataFrame:
+    """Generate technical features for a given DataFrame."""
+    with open('config.json', encoding="utf-8") as f:
         config = json.load(f)
     periods = config['general']['periods']
     features = pd.DataFrame(index=df.index)
@@ -155,13 +170,6 @@ def generate_technical_features(df):
         features[f'vwap_{period}d'] = calculate_vwap(df, period)
         features[f'sharpe_ratio_{period}d'] = calculate_sharpe_ratio(
             df, period)
-    features[f'macd'] = calculate_macd(df, period)
+    features['macd'] = calculate_macd(df)
     features = features.sort_index()
     return features.dropna()
-
-
-if __name__ == "__main__":
-    df = pd.read_csv('data/currency pairs/CHFJPY=X.csv',
-                     index_col=0, parse_dates=True)
-    df = generate_technical_features(df)
-    print(df.tail())
