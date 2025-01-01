@@ -1,14 +1,17 @@
 """Utility functions for reporting results and plotting PDFs."""
 import os
+import warnings
 import numpy as np
 import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from torch import Tensor
+from scipy.interpolate import interp1d
+from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
+from sklearn.gaussian_process import GaussianProcessRegressor
 
-from utils.dist_utils import quantiles_to_pdf_kde
 
-DEVICE = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
 def inference(model, dataloader, test_loss_fn, is_dense=True, is_linear=False) -> Tensor:
@@ -83,133 +86,61 @@ def report_results(results):
     print(formatted_df.to_string())
 
 
-def plot_3d_combined_pdfs(asset,
-                          dense_model,
-                          lstm_model,
-                          quant_reg,
-                          dense_test_dataset,
-                          lstm_test_dataset,
-                          is_linear=False) -> None:
-    """Plot the combined PDFs of the Dense and LSTM models."""
-    dense_test_dataset.set_main_asset(asset)
-    lstm_test_dataset.set_main_asset(asset)
-    dense_model.eval()
-    lstm_model.eval()
+def gp_cdf_to_pdf(probs, quantiles, grid_points=500, length_scale=0.1):
+    """
+    Linear spline for CDF, Gaussian Process approximation, and numerical differentiation for PDF.
 
-    fig = plt.figure(figsize=(18, 8))  # Reduced width to minimize white space
+    Parameters:
+    - probs: Array of probabilities (quantile levels).
+    - quantiles: Array of quantile values corresponding to the probs.
+    - grid_points: Number of points for the dense grid.
+    - length_scale: Length scale for the Gaussian Process kernel.
 
-    # Plot for Dense or Linear Model
-    ax1 = fig.add_subplot(121, projection='3d')
-    X = []  # to store the grid (log returns)  # pylint: disable=C0103
-    Y = []  # to store time steps # pylint: disable=C0103
-    Z = []  # to store PDF values (density) # pylint: disable=C0103
+    Returns:
+    - smooth_pdf: Numerically differentiated PDF values on the dense grid.
+    - smooth_cdf: GP-approximated CDF values on the dense grid.
+    - dense_grid: Dense grid of quantile values.
+    """
+    # Create a linear spline for the CDF
+    linear_cdf = interp1d(quantiles, probs, kind='linear', fill_value="extrapolate")
 
-    iterations = min(len(dense_test_dataset), 100)
-    for idx in range(iterations):
-        x, s, z, _, _ = dense_test_dataset[idx]
-        x = x[0].to(DEVICE).view(1, -1)
-        s = s[0].to(DEVICE).view(1, -1)
-        z = z[0].to(DEVICE).view(1, -1)
+    # Create a dense grid for quantile values
+    dense_grid = np.linspace(min(quantiles), max(quantiles), grid_points)
 
-        if is_linear:
-            xx = torch.cat([x, z], dim=1)
-            x = xx
+    # Evaluate the CDF on the dense grid
+    linear_cdf_values = linear_cdf(dense_grid)
 
-        with torch.no_grad():
-            if not is_linear:
-                _, dense_quantiles = dense_model(x, s, z)
-            else:
-                # Assuming `quant_reg` is the function for linear models
-                dense_quantiles = quant_reg(x.cpu().numpy())
-                dense_quantiles = torch.tensor(dense_quantiles).to(DEVICE)
+    # Fit a Gaussian Process to the CDF
+    X = dense_grid.reshape(-1, 1)
+    kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale, (1e-3, 1e1))
+    gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10)
+    gp.fit(X, linear_cdf_values)
 
-        dense_quantiles = dense_quantiles.detach().cpu().numpy().flatten()
-        dense_pdf, _, dense_grid = quantiles_to_pdf_kde(dense_quantiles / 100, bandwidth=0.01)
+    # Predict the smoothed CDF using the GP
+    smooth_cdf, _ = gp.predict(X, return_std=True)
 
-        X.append(dense_grid)  # X-axis is the grid (log returns)
-        Z.append(dense_pdf)   # Z-axis is the PDF (density values)
-        Y.append(np.full(dense_grid.shape, idx))  # Y-axis is the time step (idx)
+    # Compute the PDF as the derivative of the smoothed CDF
+    smooth_pdf = np.gradient(smooth_cdf, dense_grid)
 
-    X = np.array(X)  # pylint: disable=C0103
-    Y = np.array(Y)  # pylint: disable=C0103
-    Z = np.array(Z)  # pylint: disable=C0103
+    # Ensure non-negative PDF values
+    smooth_pdf[smooth_pdf < 0] = 0
 
-    # Create meshgrid for X (log returns) and Y (time steps)
-    X, Y = np.meshgrid(X[0], np.arange(len(X)))
-
-    surface = ax1.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8,  # type: ignore  # pylint: disable=W0612
-                               rstride=1, cstride=1, linewidth=0, antialiased=True)
-
-    for i in range(len(X)):   # pylint: disable=C0200
-        ax1.plot(X[i], Y[i], Z[i], color=plt.cm.viridis(i / len(X)),  # pylint: disable=E1101 # type: ignore
-                 alpha=(i + 1) / len(X) * 0.6)
-
-    ax1.view_init(elev=30, azim=-60)  # type: ignore
-    ax1.set_xlabel('Log Return')
-    ax1.set_ylabel('Time Step')
-    ax1.set_zlabel('Density')  # type: ignore
-    ax1.set_title(f"{'Dense' if not is_linear else 'Linear'} Model PDF")
-
-    # Plot for LSTM Model
-    ax2 = fig.add_subplot(122, projection='3d')
-    X = []  # Reset for LSTM
-    Y = []  # Reset for LSTM
-    Z = []  # Reset for LSTM
-
-    iterations = min(len(lstm_test_dataset), 100)
-    for idx in range(iterations):
-        x, s, z, _, _ = lstm_test_dataset[idx]
-        x = x.to(DEVICE).view(1, x.shape[0], -1)
-        s = s.to(DEVICE).mean().view(1, -1)
-        z = z.to(DEVICE).view(1, z.shape[0], -1)
-
-        with torch.no_grad():
-            _, lstm_quantiles = lstm_model(x, s, z)
-
-        lstm_quantiles = lstm_quantiles.detach().cpu().numpy().flatten()
-        lstm_pdf, _, lstm_grid = quantiles_to_pdf_kde(lstm_quantiles / 100, bandwidth=0.01)
-
-        X.append(lstm_grid)  # X-axis is the grid (log returns)
-        Z.append(lstm_pdf)   # Z-axis is the PDF (density values)
-        Y.append(np.full(lstm_grid.shape, idx))  # Y-axis is the time step (idx)
-
-    X = np.array(X)  # pylint: disable=C0103
-    Y = np.array(Y)  # pylint: disable=C0103
-    Z = np.array(Z)  # pylint: disable=C0103
-
-    # Create meshgrid for X (log returns) and Y (time steps)
-    X, Y = np.meshgrid(X[0], np.arange(len(X)))  # pylint: disable=C0103
-
-    surface = ax2.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8,  # type: ignore
-                               rstride=1, cstride=1, linewidth=0, antialiased=True)
-
-    for i in range(len(X)):  # pylint: disable=C0200
-        ax2.plot(X[i], Y[i], Z[i], color=plt.cm.viridis(i / len(X)),  # pylint: disable=E1101 # type: ignore
-                 alpha=(i + 1) / len(X) * 0.6)
-
-    ax2.view_init(elev=30, azim=-60)  # type: ignore
-    ax2.set_xlabel('Log Return')
-    ax2.set_ylabel('Time Step')
-    ax2.set_zlabel('Density')  # type: ignore
-    ax2.set_title('LSTM Model PDF')
-
-    # Adding the title for the entire plot using the asset name
-    plt.suptitle(f'PDFs of {asset}', fontsize=16)
-
-    plt.tight_layout()
-    plt.subplots_adjust(top=0.88)  # Adjust layout to make space for the title
-    plt.savefig(os.path.join("plots", f'{asset}_combined_pdf.eps'),
-                format='eps', dpi=300, bbox_inches='tight')
-    plt.show()
+    return smooth_pdf, smooth_cdf, dense_grid
 
 
-def plot_pdf(asset,
-             dense_model,
-             lstm_model,
-             quant_reg,
-             dense_test_dataset,
-             lstm_test_dataset,
-             is_linear=False) -> None:
+def quantiles_to_pdf_kde(quantiles, probs=None):
+    """Convert quantiles to PDF using KDE."""
+    if probs is None:
+        probs = np.array([0.00005, 0.00025, 0.00075, 0.00125, 0.00175, 0.0025, 0.005,
+                         0.01, 0.015, 0.02, 0.03, 0.05, 0.1, 0.15, 0.2, 0.25, 0.3,
+                         0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85,
+                         0.9, 0.95, 0.98, 0.99, 0.995, 0.9975, 0.99925, 0.99975, 0.99995])
+
+    pdf, cdf, x = gp_cdf_to_pdf(probs, quantiles)
+    return pdf, cdf, x
+
+
+def plot_pdf(asset, dense_model, lstm_model, quant_reg, dense_test_dataset, lstm_test_dataset, is_linear=False):
     np.random.seed(42)
     dense_test_dataset.set_main_asset(asset)
     lstm_test_dataset.set_main_asset(asset)
@@ -247,9 +178,9 @@ def plot_pdf(asset,
         _, lstm_quantiles = lstm_model(x, s, z)
     lstm_quantiles = lstm_quantiles.detach().cpu().numpy().flatten()
 
-    # Convert quantiles to PDFs
-    dense_pdf, _, dense_grid = quantiles_to_pdf_kde(dense_quantiles/100)
-    lstm_pdf, _, lstm_grid = quantiles_to_pdf_kde(lstm_quantiles/100)
+    # Convert quantiles to PDFs using new implementation
+    dense_pdf, dense_cdf, dense_grid = quantiles_to_pdf_kde(dense_quantiles/100)
+    lstm_pdf, lstm_cdf, lstm_grid = quantiles_to_pdf_kde(lstm_quantiles/100)
 
     plt.figure(figsize=(12, 12))
     plt.suptitle(f'PDF and CDF of {asset}\'s Log Return', fontsize=16)
@@ -264,6 +195,15 @@ def plot_pdf(asset,
     plt.ylabel("Density", fontsize=12)
     plt.legend(loc="upper right", fontsize=10)
 
+    # Dense or Linear CDF
+    plt.subplot(2, 2, 3)
+    plt.plot(dense_grid, dense_cdf,
+             label=f"{'Dense' if not is_linear else 'Linear'} CDF", color="blue", linestyle='-')
+    plt.title(f"{'Dense' if not is_linear else 'Linear'} CDF", fontsize=14)
+    plt.xlabel("Log Return", fontsize=12)
+    plt.ylabel("Probability", fontsize=12)
+    plt.legend(loc="lower right", fontsize=10)
+
     # LSTM PDF
     plt.subplot(2, 2, 2)
     plt.plot(lstm_grid, lstm_pdf, label="LSTM PDF", color="red", linestyle='-')
@@ -273,7 +213,105 @@ def plot_pdf(asset,
     plt.ylabel("Density", fontsize=12)
     plt.legend(loc="upper right", fontsize=10)
 
-    # Adjust layout to leave space for the main title
-    plt.tight_layout(rect=[0, 0, 1, 0.96])  # type: ignore
+    # LSTM CDF
+    plt.subplot(2, 2, 4)
+    plt.plot(lstm_grid, lstm_cdf, label="LSTM CDF", color="red", linestyle='-')
+    plt.title("LSTM CDF", fontsize=14)
+    plt.xlabel("Log Return", fontsize=12)
+    plt.ylabel("Probability", fontsize=12)
+    plt.legend(loc="lower right", fontsize=10)
+
+    plt.tight_layout(rect=[0, 0, 1, 0.96])
     plt.savefig(os.path.join("plots", f'{asset}_pdf_cdf.eps'), format='eps')
+    plt.show()
+
+
+def plot_3d_combined_pdfs(asset, dense_model, lstm_model, quant_reg, dense_test_dataset, lstm_test_dataset, is_linear=False):
+    """Plot the combined PDFs of the Dense and LSTM models."""
+    dense_test_dataset.set_main_asset(asset)
+    lstm_test_dataset.set_main_asset(asset)
+    dense_model.eval()
+    lstm_model.eval()
+
+    fig = plt.figure(figsize=(18, 8))
+
+    # Plot for Dense or Linear Model
+    ax1 = fig.add_subplot(121, projection='3d')
+    X, Y, Z = [], [], []
+
+    iterations = min(len(dense_test_dataset), 100)
+    for idx in range(iterations):
+        x, s, z, _, _ = dense_test_dataset[idx]
+        x = x[0].to(DEVICE).view(1, -1)
+        s = s[0].to(DEVICE).view(1, -1)
+        z = z[0].to(DEVICE).view(1, -1)
+
+        if is_linear:
+            xx = torch.cat([x, z], dim=1)
+            x = xx
+
+        with torch.no_grad():
+            if not is_linear:
+                _, dense_quantiles = dense_model(x, s, z)
+            else:
+                dense_quantiles = quant_reg(x.cpu().numpy())
+                dense_quantiles = torch.tensor(dense_quantiles).to(DEVICE)
+
+        dense_quantiles = dense_quantiles.detach().cpu().numpy().flatten()
+        dense_pdf, _, dense_grid = quantiles_to_pdf_kde(dense_quantiles/100)
+
+        X.append(dense_grid)
+        Z.append(dense_pdf)
+        Y.append(np.full(dense_grid.shape, idx))
+
+    X, Y, Z = np.array(X), np.array(Y), np.array(Z)
+    X, Y = np.meshgrid(X[0], np.arange(len(X)))
+
+    ax1.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8, rstride=1,
+                     cstride=1, linewidth=0, antialiased=True)
+
+    ax1.view_init(elev=30, azim=-60)
+    ax1.set_xlabel('Log Return')
+    ax1.set_ylabel('Time Step')
+    ax1.set_zlabel('Density')
+    ax1.set_title(f"{'Dense' if not is_linear else 'Linear'} Model PDF")
+
+    # Plot for LSTM Model (similar structure)
+    ax2 = fig.add_subplot(122, projection='3d')
+    X, Y, Z = [], [], []
+
+    iterations = min(len(lstm_test_dataset), 100)
+    for idx in range(iterations):
+        x, s, z, _, _ = lstm_test_dataset[idx]
+        x = x.to(DEVICE).view(1, x.shape[0], -1)
+        s = s.to(DEVICE).mean().view(1, -1)
+        z = z.to(DEVICE).view(1, z.shape[0], -1)
+
+        with torch.no_grad():
+            _, lstm_quantiles = lstm_model(x, s, z)
+
+        lstm_quantiles = lstm_quantiles.detach().cpu().numpy().flatten()
+        lstm_pdf, _, lstm_grid = quantiles_to_pdf_kde(lstm_quantiles/100)
+
+        X.append(lstm_grid)
+        Z.append(lstm_pdf)
+        Y.append(np.full(lstm_grid.shape, idx))
+
+    X, Y, Z = np.array(X), np.array(Y), np.array(Z)
+    X, Y = np.meshgrid(X[0], np.arange(len(X)))
+
+    ax2.plot_surface(X, Y, Z, cmap='viridis', alpha=0.8, rstride=1,
+                     cstride=1, linewidth=0, antialiased=True)
+
+    ax2.view_init(elev=30, azim=-60)
+    ax2.set_xlabel('Log Return')
+    ax2.set_ylabel('Time Step')
+    ax2.set_zlabel('Density')
+    ax2.set_title('LSTM Model PDF')
+
+    plt.suptitle(f'PDFs of {asset}', fontsize=16)
+    plt.tight_layout()
+    plt.subplots_adjust(top=0.88)
+    plt.savefig(os.path.join("plots", f'{asset}_combined_pdf.eps'),
+                format='eps', dpi=300, bbox_inches='tight')
     plt.show()

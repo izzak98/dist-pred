@@ -431,6 +431,7 @@ class TestDataset(Dataset):
         self.z = []
         self.y = []
         self.cat = []
+        self.denorm = []
 
         grouping = get_grouping(self.datas, self.main_asset)
         if grouping is None:
@@ -449,7 +450,7 @@ class TestDataset(Dataset):
 
         df = data.loc[shared_index]
         df = df.sort_index()
-        returns = df["return_2d"]
+        returns = df["return_2d"].shift(-self.lookforward)
         rolling_mean = df.rolling(window=self.normalization_lookback).mean()
         rolling_std = df.rolling(window=self.normalization_lookback).std()
         normalized_df = (df - rolling_mean) / rolling_std
@@ -465,7 +466,7 @@ class TestDataset(Dataset):
 
         normalized_df = normalized_df.loc[start_date:end_date]
 
-        for i in range(0, len(normalized_df)-self.lookforward):
+        for i in range(0, len(normalized_df)-self.lookforward*2):
             x = normalized_df.iloc[i:i+self.lookforward]
             s = cross_vol.loc[x.index]
             z = x.index

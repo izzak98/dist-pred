@@ -210,6 +210,7 @@ def objective(trial) -> float:
         num_epochs=100,
         patience=10,
         l1_reg=l1_reg,
+        lstm=True,
         verbose=False
     )
     return best_loss
@@ -230,10 +231,10 @@ def test_functionality() -> None:
         "layer_norm": True
     }
     normalization_window = 100
-    batch_size = 1024
+    batch_size = 256
     learning_rate = 1e-3
-    l1_reg = 0.2
-    l2_reg = 0.2
+    l1_reg = 0
+    l2_reg = 0.02
 
     model = LSTM_Model(**model_test_params)
     model.to(DEVICE)
@@ -258,7 +259,7 @@ def test_functionality() -> None:
 
     optimizer = torch.optim.Adam(
         model.parameters(), lr=learning_rate, weight_decay=l2_reg)
-    _, _ = train(
+    _, model = train(
         model=model,
         train_loader=train_loader,
         val_loader=val_loader,
@@ -267,8 +268,10 @@ def test_functionality() -> None:
         num_epochs=100,
         patience=10,
         l1_reg=l1_reg,
+        lstm=True,
         verbose=True
     )
+    # torch.save(model.state_dict(), 'lstm_model.pth')
 
 
 if __name__ == "__main__":

@@ -3,8 +3,24 @@ from tqdm import tqdm
 from torch import Tensor, nn
 from torch.utils.data import DataLoader
 import torch
+import numpy as np
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+
+def cheat_quantile_loss(y_true, y_pred, taus) -> Tensor:
+    """
+    Calculate the quantile loss for multiple quantiles.
+
+    Args:
+    y_pred (torch.Tensor): Predicted values (batch_size, num_quantiles)
+    y_true (torch.Tensor): True values (batch_size, seq_len, 1)
+    """
+    y_true = y_true.squeeze(-1)
+    realized_quantiles = np.quantile(y_true.cpu().numpy(), np.array(taus))
+    realized_quantiles = torch.tensor(realized_quantiles).to(DEVICE)
+    diff = realized_quantiles - y_pred
+    return torch.mean(diff**2)/100
 
 
 def quantile_loss(y_true, y_pred, tau) -> Tensor:
@@ -62,7 +78,7 @@ class TwoStageQuantileLoss(torch.nn.Module):
         raw_loss = aggregate_quantile_loss(y_true_raw, y_pred_raw, self.taus)
         std_loss = aggregate_quantile_loss(y_true_std, y_pred_std, self.taus)
 
-        return 0.5 * (raw_loss + std_loss)
+        return (raw_loss + std_loss)
 
 
 class ComparisonQuantileLoss(torch.nn.Module):
@@ -91,7 +107,7 @@ class ComparisonQuantileLoss(torch.nn.Module):
         return loss.mean(dim=1, keepdim=True)  # Average over quantiles
 
 
-def validate(model: nn.Module, val_loader: DataLoader, criterion: nn.Module) -> float:
+def validate(model: nn.Module, val_loader: DataLoader, criterion: nn.Module, lstm: bool = False) -> float:
     """Validate the model on the validation set."""
     model.eval()
     total_loss = 0.0
@@ -100,8 +116,10 @@ def validate(model: nn.Module, val_loader: DataLoader, criterion: nn.Module) -> 
         for x, s, z, y, sy in val_loader:
             normalized_output, raw_output = model(x, s, z)
             loss = criterion(raw_output, y, normalized_output, sy)
+            if lstm:
+                loss += cheat_quantile_loss(y, raw_output, criterion.taus)
             total_loss += loss.item()
-            running_len += len(x)
+            running_len += 1
     return total_loss / running_len
 
 
@@ -114,6 +132,7 @@ def train(
         num_epochs: int,
         patience: int,
         l1_reg: float = 0.0,
+        lstm: bool = False,
         verbose: bool = True
 ) -> tuple[float, nn.Module]:
     """
@@ -145,7 +164,8 @@ def train(
             optimizer.zero_grad()
             normalized_output, raw_output = model(x, s, z)
             loss = criterion(raw_output, y, normalized_output, sy)
-
+            if lstm:
+                loss += cheat_quantile_loss(y, raw_output, criterion.taus)
             # Add L1 regularization
             l1_loss = 0
             for param in model.parameters():
@@ -155,11 +175,11 @@ def train(
             loss.backward()
             optimizer.step()
             total_loss += loss.item()
-            running_len += len(x)
+            running_len += 1
             if verbose and isinstance(p_bar, tqdm):
                 p_bar.set_postfix({'loss': total_loss / running_len})
 
-        val_loss = validate(model, val_loader, criterion)
+        val_loss = validate(model, val_loader, criterion, lstm)
 
         out = (
             f"Epoch {epoch+1}, "
