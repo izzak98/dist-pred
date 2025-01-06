@@ -6,9 +6,7 @@ import torch
 import pandas as pd
 import matplotlib.pyplot as plt
 from torch import Tensor
-from scipy.interpolate import interp1d
-from sklearn.gaussian_process.kernels import RBF, ConstantKernel as C
-from sklearn.gaussian_process import GaussianProcessRegressor
+from scipy.interpolate import PchipInterpolator
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -86,46 +84,76 @@ def report_results(results):
     print(formatted_df.to_string())
 
 
-def gp_cdf_to_pdf(probs, quantiles, grid_points=500, length_scale=0.1):
+def generate_smooth_pdf(quantiles, taus, plot=False):
     """
-    Linear spline for CDF, Gaussian Process approximation, and numerical differentiation for PDF.
-
-    Parameters:
-    - probs: Array of probabilities (quantile levels).
-    - quantiles: Array of quantile values corresponding to the probs.
-    - grid_points: Number of points for the dense grid.
-    - length_scale: Length scale for the Gaussian Process kernel.
-
-    Returns:
-    - smooth_pdf: Numerically differentiated PDF values on the dense grid.
-    - smooth_cdf: GP-approximated CDF values on the dense grid.
-    - dense_grid: Dense grid of quantile values.
+    Generate a smoothed PDF from quantiles with additional controls to prevent spikes
+    and ensure the CDF is between [0, 1].
     """
-    # Create a linear spline for the CDF
-    linear_cdf = interp1d(quantiles, probs, kind='linear', fill_value="extrapolate")
+    # Constants
+    GRID_POINTS = 1000
+    MIN_DENSITY = 1e-5
+    eps = 1e-4
+    og_quants = quantiles.copy()
+    og_taus = taus.copy()
 
-    # Create a dense grid for quantile values
-    dense_grid = np.linspace(min(quantiles), max(quantiles), grid_points)
+    unique_mask = np.concatenate(([True], np.diff(quantiles) > eps))
+    quantiles = quantiles[unique_mask]
+    taus = taus[unique_mask]
 
-    # Evaluate the CDF on the dense grid
-    linear_cdf_values = linear_cdf(dense_grid)
+    # Create denser grid
+    grid_x = np.linspace(quantiles[0], quantiles[-1], GRID_POINTS)
 
-    # Fit a Gaussian Process to the CDF
-    X = dense_grid.reshape(-1, 1)
-    kernel = C(1.0, (1e-3, 1e3)) * RBF(length_scale, (1e-3, 1e1))
-    gp = GaussianProcessRegressor(kernel=kernel, n_restarts_optimizer=10)
-    gp.fit(X, linear_cdf_values)
+    # Monotonic spline for the CDF
+    try:
+        cdf_monotonic = PchipInterpolator(quantiles, taus, extrapolate=False)
+        cdf = cdf_monotonic(grid_x)
+    except Exception as e:
+        print("Falling back to linear interpolation:", e)
+        cdf = np.interp(grid_x, quantiles, taus)
 
-    # Predict the smoothed CDF using the GP
-    smooth_cdf, _ = gp.predict(X, return_std=True)
+    # Clamp CDF to [0,1], then ensure it's monotonically non-decreasing
+    cdf = np.clip(cdf, 0, 1)
+    cdf = np.maximum.accumulate(cdf)
+    # Rescale so that it starts exactly at 0 and ends exactly at 1
+    cdf -= cdf[0]
+    if cdf[-1] > 0:
+        cdf /= cdf[-1]
 
-    # Compute the PDF as the derivative of the smoothed CDF
-    smooth_pdf = np.gradient(smooth_cdf, dense_grid)
+    # Approximate PDF from finite differences (or use derivative if PCHIP)
+    density = np.gradient(cdf, grid_x)
 
-    # Ensure non-negative PDF values
-    smooth_pdf[smooth_pdf < 0] = 0
+    # Smooth the PDF if desired
+    window = 51  # Must be odd
+    smoothed_density = np.convolve(density, np.ones(window)/window, mode='same')
 
-    return smooth_pdf, smooth_cdf, dense_grid
+    # Ensure non-negative and non-zero density
+    smoothed_density = np.maximum(smoothed_density, MIN_DENSITY)
+
+    # Normalize PDF to integrate to 1
+    area = np.trapz(smoothed_density, grid_x)
+    smoothed_density = smoothed_density / area
+
+    if plot:
+        plt.figure(figsize=(12, 5))
+        plt.plot(grid_x, smoothed_density, label='Smoothed PDF')
+        plt.title('Smoothed PDF')
+        plt.xlabel('Returns')
+        plt.ylabel('Density')
+        plt.grid(True)
+        plt.legend()
+        plt.show()
+
+        plt.figure(figsize=(12, 5))
+        plt.scatter(og_quants, og_taus, color='red', label='Original Quantiles')
+        plt.plot(grid_x, cdf, 'b-', alpha=0.7, label='CDF')
+        plt.title('CDF with Monotonic Spline + Clamping')
+        plt.xlabel('Returns')
+        plt.ylabel('Probability')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+    return grid_x, smoothed_density, cdf
 
 
 def quantiles_to_pdf_kde(quantiles, probs=None):
@@ -136,7 +164,7 @@ def quantiles_to_pdf_kde(quantiles, probs=None):
                          0.35, 0.4, 0.45, 0.5, 0.55, 0.6, 0.65, 0.7, 0.75, 0.8, 0.85,
                          0.9, 0.95, 0.98, 0.99, 0.995, 0.9975, 0.99925, 0.99975, 0.99995])
 
-    pdf, cdf, x = gp_cdf_to_pdf(probs, quantiles)
+    x, pdf, cdf = generate_smooth_pdf(quantiles, probs)
     return pdf, cdf, x
 
 

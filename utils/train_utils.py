@@ -20,7 +20,7 @@ def cheat_quantile_loss(y_true, y_pred, taus) -> Tensor:
     realized_quantiles = np.quantile(y_true.cpu().numpy(), np.array(taus))
     realized_quantiles = torch.tensor(realized_quantiles).to(DEVICE)
     diff = realized_quantiles - y_pred
-    return torch.mean(diff**2)/100
+    return torch.mean(diff**2)/10
 
 
 def quantile_loss(y_true, y_pred, tau) -> Tensor:

@@ -1,336 +1,205 @@
 import numpy as np
-from scipy.stats import norm, wasserstein_distance, t, ks_2samp
-from typing import Dict, List, Union
-import pandas as pd
+import matplotlib.pyplot as plt
+from scipy.interpolate import PchipInterpolator
+from scipy.stats import wasserstein_distance, skew, kurtosis, norm
 
 
-def wasserstein_metric(quantiles: np.ndarray, real_returns: np.ndarray) -> float:
-    """Calculate Wasserstein distance for a single prediction window."""
-    real_cdf = np.sort(real_returns)
-    pred_cdf = np.sort(quantiles)
-    return wasserstein_distance(real_cdf, pred_cdf)
-
-
-def ks_statistic(quantiles: np.ndarray, real_returns: np.ndarray) -> float:
-    """Calculate KS statistic for a single prediction window."""
-    return ks_2samp(quantiles, real_returns).statistic
-
-
-def quantile_coverage_error(quantiles: np.ndarray, real_returns: np.ndarray,
-                            quant_probs: np.ndarray) -> float:
-    """Calculate QCE for a single prediction window."""
-    empirical_proportions = np.array([
-        np.mean(real_returns <= q) for q in quantiles
-    ])
-    errors = np.abs(empirical_proportions - quant_probs)
-    return np.mean(errors)
-
-
-def historical_baseline(real_returns: np.ndarray, quant_probs: np.ndarray) -> np.ndarray:
-    """Calculate historical baseline quantiles."""
-    return np.percentile(real_returns, quant_probs * 100)
-
-
-def gaussian_baseline(real_returns: np.ndarray, quant_probs: np.ndarray) -> np.ndarray:
-    """Calculate Gaussian baseline quantiles."""
-    mu, sigma = np.mean(real_returns), np.std(real_returns)
-    return norm.ppf(quant_probs, loc=mu, scale=sigma)
-
-
-def student_t_baseline(real_returns: np.ndarray, quant_probs: np.ndarray) -> np.ndarray:
-    """Calculate Student's t baseline quantiles."""
-    df, loc, scale = 5, np.mean(real_returns), np.std(real_returns)
-    return t.ppf(quant_probs, df, loc=loc, scale=scale)
-
-
-def evaluate_predictions_2d(predicted_quantiles: np.ndarray, future_returns: np.ndarray,
-                            observed_returns: np.ndarray, quant_probs: np.ndarray) -> Dict:
+def calculate_wasserstein(cdf, predicted_grid, realized_returns):
     """
-    Evaluate distributional predictions across multiple time windows.
+    Calculate Wasserstein distance between predicted PDF and realized returns.
 
     Args:
-        predicted_quantiles: Shape (n_windows, n_quantiles)
-        future_returns: Shape (n_windows, n_future_steps)
-        observed_returns: Shape (n_windows, n_observed_steps)
-        quant_probs: Shape (n_quantiles,)
+    cdf: array of predicted cumulative density values (monotonic)
+    predicted_grid: array of x values where density is evaluated
+    realized_returns: array of actual realized returns
 
     Returns:
-        Dict containing mean and std of metrics across windows
+    float: Wasserstein distance
     """
-    n_windows = predicted_quantiles.shape[0]
-    metrics_per_window = []
 
-    for i in range(n_windows):
-        # Generate baseline predictions for this window
-        hist_baseline = historical_baseline(observed_returns[i], quant_probs)
-        gauss_baseline = gaussian_baseline(observed_returns[i], quant_probs)
-        t_baseline = student_t_baseline(observed_returns[i], quant_probs)
+    # Ensure CDF is strictly monotonic
+    cdf = np.maximum.accumulate(cdf)
 
-        # Calculate metrics for this window
-        window_metrics = {
-            'qce': {
-                'historical': quantile_coverage_error(hist_baseline, future_returns[i], quant_probs),
-                'gaussian': quantile_coverage_error(gauss_baseline, future_returns[i], quant_probs),
-                'student_t': quantile_coverage_error(t_baseline, future_returns[i], quant_probs),
-                'qlstm': quantile_coverage_error(predicted_quantiles[i], future_returns[i], quant_probs)
-            },
-            'wasserstein': {
-                'historical': wasserstein_metric(hist_baseline, future_returns[i]),
-                'gaussian': wasserstein_metric(gauss_baseline, future_returns[i]),
-                'student_t': wasserstein_metric(t_baseline, future_returns[i]),
-                'qlstm': wasserstein_metric(predicted_quantiles[i], future_returns[i])
-            },
-            'ks': {
-                'historical': ks_statistic(hist_baseline, future_returns[i]),
-                'gaussian': ks_statistic(gauss_baseline, future_returns[i]),
-                'student_t': ks_statistic(t_baseline, future_returns[i]),
-                'qlstm': ks_statistic(predicted_quantiles[i], future_returns[i])
-            }
-        }
-        metrics_per_window.append(window_metrics)
+    # Extend grid if necessary to cover realized returns
+    grid_min = min(predicted_grid.min(), realized_returns.min())
+    grid_max = max(predicted_grid.max(), realized_returns.max())
+    extended_grid = np.linspace(grid_min, grid_max, len(predicted_grid))
 
-    # Calculate aggregate statistics
-    aggregate_metrics = {
-        'mean': {},
-        'std': {},
-        'min': {},
-        'max': {},
-        'median': {}
-    }
+    # Interpolate CDF to the extended grid
+    extended_cdf = np.interp(extended_grid, predicted_grid, cdf)
 
-    # Helper function to extract specific metric across windows
-    def extract_metric(metrics_list, metric_path):
-        values = []
-        for m in metrics_list:
-            curr = m
-            for key in metric_path:
-                curr = curr[key]
-            values.append(curr)
-        return np.array(values)
+    # Generate more predicted samples for stability
+    random_unif = np.random.uniform(0, 1, size=10 * len(realized_returns))
+    predicted_samples = np.interp(random_unif, extended_cdf, extended_grid)
 
-    # Metrics to aggregate
-    metric_paths = [
-        ('qce', model) for model in ['historical', 'gaussian', 'student_t', 'qlstm']
-    ] + [
-        ('wasserstein', model) for model in ['historical', 'gaussian', 'student_t', 'qlstm']
-    ] + [
-        ('ks', model) for model in ['historical', 'gaussian', 'student_t', 'qlstm']
-    ]
+    # Normalize both distributions
+    predicted_samples = (predicted_samples - predicted_samples.mean()) / predicted_samples.std()
+    realized_returns = (realized_returns - realized_returns.mean()) / realized_returns.std()
 
-    # Calculate statistics for each metric
-    for path in metric_paths:
-        values = extract_metric(metrics_per_window, path)
-        metric_name = '_'.join(path)
-
-        aggregate_metrics['mean'][metric_name] = np.mean(values)
-        aggregate_metrics['std'][metric_name] = np.std(values)
-        aggregate_metrics['min'][metric_name] = np.min(values)
-        aggregate_metrics['max'][metric_name] = np.max(values)
-        aggregate_metrics['median'][metric_name] = np.median(values)
-
-    return aggregate_metrics
+    # Calculate Wasserstein distance
+    return wasserstein_distance(predicted_samples, realized_returns)
 
 
-def print_aggregate_metrics(metrics: Dict):
-    """Pretty print the aggregate metrics."""
-    stats = ['mean', 'std', 'median', 'min', 'max']
-    metric_types = ['qce', 'wasserstein', 'ks']
-
-    for metric_type in metric_types:
-        print(f"\n{metric_type.upper()} Metrics:")
-        relevant_metrics = {k: v for k, v in metrics['mean'].items() if metric_type in k}
-
-        for metric_name, mean_value in relevant_metrics.items():
-            print(f"\n{metric_name}:")
-            for stat in stats:
-                print(f"  {stat}: {metrics[stat][metric_name]:.4f}")
-
-
-def format_distribution_results(results_by_market):
+def generate_smooth_pdf(quantiles, taus, plot=False):
     """
-    Format distribution metrics results into a pretty DataFrame.
-
-    Args:
-        results_by_market (dict): Dictionary with market names as keys and metric DataFrames as values
-                                 Each DataFrame should contain 'metric', 'mean', 'std' columns
-
-    Returns:
-        pd.DataFrame: Beautifully formatted results table
+    Generate a smoothed PDF from quantiles with additional controls to prevent spikes
+    and ensure the CDF is between [0, 1].
     """
-    # Initialize empty lists to store formatted results
-    rows = []
+    # Constants
+    GRID_POINTS = 1000
+    MIN_DENSITY = 1e-5
+    eps = 1e-4
+    og_quants = quantiles.copy()
+    og_taus = taus.copy()
 
-    # Define metric display names and order
-    metric_order = {
-        'qLSTM_wasserstein': 'Wasserstein Distance',
-        'qLSTM_ks': 'KS Statistic',
-        'qLSTM_qce': 'Quantile Coverage Error',
-        'historical_wasserstein': 'Historical Wasserstein',
-        'historical_ks': 'Historical KS',
-        'historical_qce': 'Historical QCE',
-        'gaussian_wasserstein': 'Gaussian Wasserstein',
-        'gaussian_ks': 'Gaussian KS',
-        'gaussian_qce': 'Gaussian QCE',
-        'student_t_wasserstein': 'Student-t Wasserstein',
-        'student_t_ks': 'Student-t KS',
-        'student_t_qce': 'Student-t QCE'
-    }
+    unique_mask = np.concatenate(([True], np.diff(quantiles) > eps))
+    quantiles = quantiles[unique_mask]
+    taus = taus[unique_mask]
 
-    # Group metrics by type
-    metric_groups = {
-        'LSTM Metrics': ['qLSTM_wasserstein', 'qLSTM_ks', 'qLSTM_qce'],
-        'Historical Baseline': ['historical_wasserstein', 'historical_ks', 'historical_qce'],
-        'Gaussian Baseline': ['gaussian_wasserstein', 'gaussian_ks', 'gaussian_qce'],
-        'Student-t Baseline': ['student_t_wasserstein', 'student_t_ks', 'student_t_qce']
-    }
+    # Create denser grid
+    grid_x = np.linspace(quantiles[0], quantiles[-1], GRID_POINTS)
 
-    # Create multi-level table
-    for group_name, metrics in metric_groups.items():
-        # Add group header
-        rows.append(pd.Series({'metric': group_name}))
+    # Monotonic spline for the CDF
+    try:
+        cdf_monotonic = PchipInterpolator(quantiles, taus, extrapolate=False)
+        cdf = cdf_monotonic(grid_x)
+    except Exception as e:
+        print("Falling back to linear interpolation:", e)
+        cdf = np.interp(grid_x, quantiles, taus)
 
-        for metric in metrics:
-            metric_values = {}
-            metric_values['metric'] = f"  {metric_order[metric]}"  # Indent metric names
+    # Clamp CDF to [0,1], then ensure it's monotonically non-decreasing
+    cdf = np.clip(cdf, 0, 1)
+    cdf = np.maximum.accumulate(cdf)
+    # Rescale so that it starts exactly at 0 and ends exactly at 1
+    cdf -= cdf[0]
+    if cdf[-1] > 0:
+        cdf /= cdf[-1]
 
-            # Add values for each market
-            for market, results in results_by_market.items():
-                if metric in results['metric'].values:
-                    row = results[results['metric'] == metric].iloc[0]
-                    metric_values[f"{market}_mean"] = f"{row['mean']:.4f}"
-                    metric_values[f"{market}_std"] = f"({row['std']:.4f})"
+    # Approximate PDF from finite differences (or use derivative if PCHIP)
+    density = np.gradient(cdf, grid_x)
 
-            rows.append(pd.Series(metric_values))
+    # Smooth the PDF if desired
+    window = 51  # Must be odd
+    smoothed_density = np.convolve(density, np.ones(window)/window, mode='same')
 
-    # Create DataFrame
-    results_df = pd.DataFrame(rows)
+    # Ensure non-negative and non-zero density
+    smoothed_density = np.maximum(smoothed_density, MIN_DENSITY)
 
-    # Style the DataFrame
-    def highlight_groups(s):
-        return ['font-weight: bold' if not str(s['metric']).startswith('  ') else ''
-                for _ in s]
+    # Normalize PDF to integrate to 1
+    area = np.trapz(smoothed_density, grid_x)
+    smoothed_density = smoothed_density / area
 
-    styled_df = results_df.style\
-        .apply(highlight_groups, axis=1)\
-        .format(precision=4)\
-        .set_properties(**{
-            'text-align': 'right',
-            'padding': '3px 10px'
-        })\
-        .set_table_styles([
-            {'selector': 'th', 'props': [('text-align', 'center'),
-                                         ('font-weight', 'bold'),
-                                         ('background-color', '#f0f0f0')]},
-            {'selector': 'td', 'props': [('text-align', 'right')]},
-            {'selector': 'td:first-child', 'props': [('text-align', 'left')]}
-        ])
+    if plot:
+        plt.figure(figsize=(12, 5))
+        plt.plot(grid_x, smoothed_density, label='Smoothed PDF')
+        plt.title('Smoothed PDF')
+        plt.xlabel('Returns')
+        plt.ylabel('Density')
+        plt.grid(True)
+        plt.legend()
+        plt.show()
 
-    return styled_df
+        plt.figure(figsize=(12, 5))
+        plt.scatter(og_quants, og_taus, color='red', label='Original Quantiles')
+        plt.plot(grid_x, cdf, 'b-', alpha=0.7, label='CDF')
+        plt.title('CDF with Monotonic Spline + Clamping')
+        plt.xlabel('Returns')
+        plt.ylabel('Probability')
+        plt.legend()
+        plt.grid(True)
+        plt.show()
+
+    return grid_x, smoothed_density, cdf
 
 
-class DistributionAnalyzer:
-    def __init__(self, quant_probs: np.ndarray):
-        """
-        Initialize analyzer with quantile probabilities.
+# Example usage
+taus = np.array([5.0000e-05, 2.5000e-04, 7.5000e-04, 1.2500e-03, 1.7500e-03,
+                 2.5000e-03, 5.0000e-03, 1.0000e-02, 1.5000e-02, 2.0000e-02,
+                 3.0000e-02, 5.0000e-02, 1.0000e-01, 1.5000e-01, 2.0000e-01,
+                 2.5000e-01, 3.0000e-01, 3.5000e-01, 4.0000e-01, 4.5000e-01,
+                 5.0000e-01, 5.5000e-01, 6.0000e-01, 6.5000e-01, 7.0000e-01,
+                 7.5000e-01, 8.0000e-01, 8.5000e-01, 9.0000e-01, 9.5000e-01,
+                 9.8000e-01, 9.9000e-01, 9.9500e-01, 9.9750e-01, 9.9925e-01,
+                 9.9975e-01, 9.9995e-01])
 
-        Args:
-            quant_probs: Array of quantile probabilities
-        """
-        self.quant_probs = quant_probs
+predicted_quantiles = np.array([-1.13813117e-01, -9.81501862e-02, -8.39762017e-02, -7.63831213e-02,
+                                -7.16307834e-02, -6.58247992e-02, -5.48559278e-02, -4.31412645e-02,
+                                -3.67169455e-02, -3.26498821e-02, -2.67682951e-02, -2.01001763e-02,
+                                -1.29303625e-02, -9.45830531e-03, -6.80963136e-03, -4.11394192e-03,
+                                -3.60043906e-03, -1.40941748e-03, -1.78500224e-04, -3.83639017e-05,
+                                9.46297878e-05,  4.34772635e-04,  1.05301116e-03,  1.45855185e-03,
+                                3.47404485e-03,  5.12253167e-03,  7.24938512e-03,  1.05004953e-02,
+                                1.41525576e-02,  2.11500693e-02,  3.39386910e-02,  4.48816866e-02,
+                                5.58338910e-02,  6.65146708e-02,  8.63869637e-02,  1.01823322e-01,
+                                1.12997122e-01]
+                               )
 
-    def evaluate_market(self,
-                        predicted_quantiles: np.ndarray,
-                        future_returns: np.ndarray,
-                        observed_returns: np.ndarray) -> Dict:
-        """
-        Evaluate predictions for a single market.
+x, density, cdf = generate_smooth_pdf(predicted_quantiles, taus, plot=True)
 
-        Args:
-            predicted_quantiles: Shape (n_windows, n_quantiles)
-            future_returns: Shape (n_windows, n_future_steps)
-            observed_returns: Shape (n_windows, n_observed_steps)
+# Calculate some basic statistics from the smoothed distribution
+mean = np.trapz(x * density, x)
+variance = np.trapz((x - mean)**2 * density, x)
+skewness = np.trapz(((x - mean)/np.sqrt(variance))**3 * density, x)
+est_kurtosis = np.trapz(((x - mean)/np.sqrt(variance))**4 * density, x)
 
-        Returns:
-            Dict with aggregated metrics
-        """
-        return evaluate_predictions_2d(
-            predicted_quantiles,
-            future_returns,
-            observed_returns,
-            self.quant_probs
-        )
+print(f"Mean: {mean:.6f}")
+print(f"Std Dev: {np.sqrt(variance):.6f}")
+print(f"Skewness: {skewness:.6f}")
+print(f"Kurtosis: {est_kurtosis:.6f}")
 
-    def evaluate_markets(self,
-                         predictions_by_market: Dict[str, Dict[str, np.ndarray]]) -> pd.DataFrame:
-        """
-        Evaluate predictions across multiple markets and format results.
+future_returns = np.array([0.00852014,  0.02728934,  0.02025293,  0.00663525,  0.02271252,
+                           -0.00785648, -0.00722774,  0.03362522,  0.03608126, -0.07108913,
+                           0.00586313, -0.0093281,  0.00795154, -0.00344934, -0.01954009,
+                           -0.00035124, -0.1368499,  0.05677786, -0.01379864, -0.00930612,
+                           -0.02804838,  0.01115552, -0.06972892,  0.03874677,  0.03887476,
+                           0.00392328,  0.04815599, -0.06274908,  0.00119127,  0.00475051],)
 
-        Args:
-            predictions_by_market: Dict with keys as market names and values as dicts containing:
-                - 'predicted_quantiles': Shape (n_windows, n_quantiles)
-                - 'future_returns': Shape (n_windows, n_future_steps)
-                - 'observed_returns': Shape (n_windows, n_observed_steps)
+realized_mean = np.mean(future_returns)
+realized_std = np.std(future_returns)
+realized_skew = skew(future_returns)
+realized_kurt = kurtosis(future_returns)
 
-        Returns:
-            Styled pandas DataFrame with formatted results
-        """
-        results_by_market = {}
+print(f"Realized Mean: {realized_mean:.6f}")
+print(f"Realized Std Dev: {realized_std:.6f}")
+print(f"Realized Skewness: {realized_skew:.6f}")
+print(f"Realized Kurtosis: {realized_kurt:.6f}")
 
-        for market_name, data in predictions_by_market.items():
-            # Evaluate metrics for this market
-            metrics = self.evaluate_market(
-                data['predicted_quantiles'],
-                data['future_returns'],
-                data['observed_returns']
-            )
+true_dist = np.quantile(future_returns, taus)
+quantiles_error = np.sqrt(np.mean((true_dist - predicted_quantiles)**2))
+print(f"Quantiles Error: {quantiles_error:.6f}")
 
-            # Convert to DataFrame format
-            market_results = []
-            for metric_type in ['wasserstein', 'ks', 'qce']:
-                for model in ['qlstm', 'historical', 'gaussian', 'student_t']:
-                    metric_name = f"{model}_{metric_type}"
-                    market_results.append({
-                        'metric': metric_name,
-                        'mean': metrics['mean'][f"{metric_type}_{model}"],
-                        'std': metrics['std'][f"{metric_type}_{model}"],
-                        'median': metrics['median'][f"{metric_type}_{model}"],
-                        'min': metrics['min'][f"{metric_type}_{model}"],
-                        'max': metrics['max'][f"{metric_type}_{model}"]
-                    })
+# Calculate the Wasserstein distance between the two distributions
+wasserstein_dist = calculate_wasserstein(cdf, x, future_returns)
+print(f"Wasserstein Distance: {wasserstein_dist:.6f}")
 
-            results_by_market[market_name] = pd.DataFrame(market_results)
+observred_returns = np.array([0.0035663, -0.00428105, -0.00970019, -0.00906619,  0.00544969,
+                              0.01152743,  0.00962402,  0.01583709, -0.00665617,  0.00874891,
+                              -0.00034842, -0.00454152, -0.01517062, -0.0194731, -0.01694651,
+                              0.00543962,  0.00505057, -0.02293087,  0.01788029, -0.01054349,
+                              0.02205039,  0.02017417, -0.01411459, -0.01431676,  0.,
+                              -0.00868933,  0.01801859,  0.00285289, -0.01362515, -0.03004982],)
 
-        # Format results into pretty table
-        return format_distribution_results(results_by_market)
+observed_mean = np.mean(observred_returns)
+observed_std = np.std(observred_returns)
 
 
-# Example usage:
-if __name__ == "__main__":
-    # Example data setup
-    n_windows = 100
-    n_quantiles = 37
-    n_future_steps = 22
-    n_observed_steps = 250
+gaussian = norm(loc=observed_mean, scale=observed_std)
+gaussian_pdf = gaussian.pdf(x)
+gaussian_cdf = gaussian.cdf(x)
+gaussian_quantiles = gaussian.ppf(taus)
 
-    quant_probs = np.linspace(0.0001, 0.9999, n_quantiles)
+gaussian_error = np.sqrt(np.mean((gaussian_quantiles - predicted_quantiles)**2))
+print(f"Quantiles Error (Gaussian): {gaussian_error:.6f}")
+# Calculate the Wasserstein distance between the two distributions
+print(f"Wasserstein Distance: {calculate_wasserstein(gaussian_cdf, x, future_returns):.6f}")
 
-    # Generate sample data for different markets
-    markets = ['Crypto', 'Forex', 'Stocks', 'Commodities']
-    predictions_by_market = {}
-
-    for market in markets:
-        predictions_by_market[market] = {
-            'predicted_quantiles': np.random.normal(0, 1, (n_windows, n_quantiles)),
-            'future_returns': np.random.normal(0, 1, (n_windows, n_future_steps)),
-            'observed_returns': np.random.normal(0, 1, (n_windows, n_observed_steps))
-        }
-
-    # Create analyzer and evaluate
-    analyzer = DistributionAnalyzer(quant_probs)
-    formatted_results = analyzer.evaluate_markets(predictions_by_market)
-
-    # Display results
-    print("\nFormatted Results Table:")
-    # print(formatted_results)  # For Jupyter notebook
-    # For non-Jupyter environments:
-    print(formatted_results.to_string())
+plt.figure(figsize=(12, 6))
+plt.plot(x, density, label='Predicted PDF')
+plt.hist(future_returns, bins=20, density=True, alpha=0.5, label='True PDF')
+plt.plot(x, gaussian_pdf, label='Gaussian PDF')
+plt.title('Predicted vs. True PDF')
+plt.xlabel('Returns')
+plt.ylabel('Density')
+plt.legend()
+plt.grid(True)
+plt.show()

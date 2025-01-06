@@ -227,10 +227,10 @@ def test_functionality() -> None:
         "market_lstm_h": 16,
         "market_hidden_layers": [16],
         "market_hidden_activation": "relu",
-        "dropout": 0.0,
+        "dropout": 0.1,
         "layer_norm": True
     }
-    normalization_window = 100
+    normalization_window = 250
     batch_size = 256
     learning_rate = 1e-3
     l1_reg = 0
