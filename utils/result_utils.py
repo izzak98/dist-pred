@@ -7,16 +7,17 @@ import pandas as pd
 import matplotlib.pyplot as plt
 from torch import Tensor
 from scipy.interpolate import PchipInterpolator
+from scipy.stats import wasserstein_distance, norm
 
 
 DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def inference(model, dataloader, test_loss_fn, is_dense=True, is_linear=False) -> Tensor:
+def inference(model, dataloader, test_loss_fn, is_dense=True, is_linear=False, hybrid=False, quant_probs=None):
     losses = []
     targets = []
     model.eval()
-    for x, s, z, y, _ in dataloader:
+    for x, s, z, y, obs in dataloader:
         x, s, z, y = x.to(DEVICE), s.to(DEVICE), z.to(DEVICE), y.to(DEVICE)
         if is_dense or is_linear:
             x = x[:, 0, :]
@@ -30,6 +31,15 @@ def inference(model, dataloader, test_loss_fn, is_dense=True, is_linear=False) -
         with torch.no_grad():
             if not is_linear:
                 _, y_pred = model(x, s, z)
+                if hybrid and not is_dense:
+                    hybrid_quantiles = []
+                    for obs_ in obs:
+                        mean = obs_[:, -1].mean().cpu()
+                        std = obs_[:, -1].std().cpu()
+                        baseline_quantiles = norm.ppf(quant_probs, loc=mean, scale=std)
+                        hybrid_quantiles.append(baseline_quantiles)
+                    hybrid_quantiles = torch.tensor(hybrid_quantiles).to(DEVICE)
+                    y_pred = (y_pred + hybrid_quantiles) / 2
             else:
                 y_pred = model(x.cpu().numpy())
                 y_pred = torch.tensor(y_pred).to(DEVICE)
@@ -49,9 +59,10 @@ def report_results(results):
     # Calculate total mean
     dense_total_mean = df['dense'].mean()
     lstm_total_mean = df['lstm'].mean()
+    hybrid_total_mean = df['hybrid'].mean()
     linear_total_mean = df['linear'].mean()
     new_row = pd.DataFrame({'linear': linear_total_mean, 'dense': dense_total_mean,
-                           'lstm': lstm_total_mean}, index=['Total Mean'])
+                           'lstm': lstm_total_mean, "hybrid": hybrid_total_mean}, index=['Total Mean'])
     df = pd.concat([df, new_row])
 
     # Calculate difference and percentage difference for Dense - LSTM
@@ -84,15 +95,13 @@ def report_results(results):
     print(formatted_df.to_string())
 
 
-def generate_smooth_pdf(quantiles, taus, plot=False):
+def generate_smooth_pdf(quantiles, taus, min_density=1e-3, eps=1e-6, window=61):
     """
     Generate a smoothed PDF from quantiles with additional controls to prevent spikes
     and ensure the CDF is between [0, 1].
     """
     # Constants
     GRID_POINTS = 1000
-    MIN_DENSITY = 1e-5
-    eps = 1e-4
     og_quants = quantiles.copy()
     og_taus = taus.copy()
 
@@ -108,7 +117,9 @@ def generate_smooth_pdf(quantiles, taus, plot=False):
         cdf_monotonic = PchipInterpolator(quantiles, taus, extrapolate=False)
         cdf = cdf_monotonic(grid_x)
     except Exception as e:
-        print("Falling back to linear interpolation:", e)
+        # print(f"Quantiles: {og_quants}")
+        # print(f"Taus: {og_taus}")
+        # print("Falling back to linear interpolation:", e)
         cdf = np.interp(grid_x, quantiles, taus)
 
     # Clamp CDF to [0,1], then ensure it's monotonically non-decreasing
@@ -122,38 +133,137 @@ def generate_smooth_pdf(quantiles, taus, plot=False):
     # Approximate PDF from finite differences (or use derivative if PCHIP)
     density = np.gradient(cdf, grid_x)
 
-    # Smooth the PDF if desired
-    window = 51  # Must be odd
     smoothed_density = np.convolve(density, np.ones(window)/window, mode='same')
 
     # Ensure non-negative and non-zero density
-    smoothed_density = np.maximum(smoothed_density, MIN_DENSITY)
+    smoothed_density = np.maximum(smoothed_density, min_density)
 
     # Normalize PDF to integrate to 1
     area = np.trapz(smoothed_density, grid_x)
     smoothed_density = smoothed_density / area
 
-    if plot:
-        plt.figure(figsize=(12, 5))
-        plt.plot(grid_x, smoothed_density, label='Smoothed PDF')
-        plt.title('Smoothed PDF')
-        plt.xlabel('Returns')
-        plt.ylabel('Density')
-        plt.grid(True)
-        plt.legend()
-        plt.show()
-
-        plt.figure(figsize=(12, 5))
-        plt.scatter(og_quants, og_taus, color='red', label='Original Quantiles')
-        plt.plot(grid_x, cdf, 'b-', alpha=0.7, label='CDF')
-        plt.title('CDF with Monotonic Spline + Clamping')
-        plt.xlabel('Returns')
-        plt.ylabel('Probability')
-        plt.legend()
-        plt.grid(True)
-        plt.show()
+    # regenerate CDF
+    cdf = np.cumsum(smoothed_density) * (grid_x[1] - grid_x[0])
 
     return grid_x, smoothed_density, cdf
+
+
+def calculate_wasserstein(cdf, predicted_grid, realized_returns):
+    """
+    Calculate Wasserstein distance between predicted PDF and realized returns.
+
+    Args:
+    pdf: array of predicted probability density values
+    predicted_grid: array of x values where density is evaluated
+    realized_returns: array of actual realized returns
+
+    Returns:
+    float: Wasserstein distance
+    """
+
+    # Sample predicted returns from the PDF
+    random_uniform_samples = np.random.uniform(0, 1, len(realized_returns))
+    predicted_samples = np.interp(random_uniform_samples, cdf, predicted_grid)
+
+    # Calculate Wasserstein distance
+    return wasserstein_distance(predicted_samples, realized_returns)
+
+
+def calculate_crps(predicted_cdf, observed_values):
+    """
+    Calculate the Continuous Ranked Probability Score (CRPS) for predicted CDFs and observed values.
+
+    Parameters:
+    - predicted_cdf: array-like, shape (n_points)
+        Predicted cumulative distribution functions for each observation.
+    - observed_values: array-like, shape (n_samples,)
+        Observed values to compare against the predicted CDFs.
+
+    Returns:
+    - crps_scores: array-like, shape (n_samples,)
+        The CRPS for each observation.
+    - mean_crps: float
+        The mean CRPS across all observations.
+    """
+    n_samples = len(observed_values)
+    crps_scores = np.zeros(n_samples)
+
+    for i in range(n_samples):
+        # The predicted CDF values for the i-th observation
+        # Observed value for the i-th observation
+        observed = observed_values[i]
+
+        # Define the step function for the observed value
+        step_function = np.array(
+            [1 if x >= observed else 0 for x in np.linspace(0, 1, len(predicted_cdf))])
+
+        # Compute the CRPS for the i-th observation
+        crps_scores[i] = np.mean((predicted_cdf - step_function) ** 2)
+
+    # Calculate the mean CRPS
+    mean_crps = np.mean(crps_scores)
+
+    return mean_crps
+
+
+def calculate_var_metric(predicted_quantiles, hybrid_quantiles, observed_returns, baseline_quantiles, quantile_level, quant_probs):
+    """
+    Calculate the deviation from the desired quantile level for predicted quantiles, observed returns, 
+    and a Gaussian baseline.
+
+    Parameters:
+    - predicted_quantiles: array-like, shape (n_quantiles,)
+        Predicted quantiles from the model.
+    - observed_returns: array-like, shape (n_observations,)
+        Observed future returns.
+    - baseline_quantiles: array-like, shape (n_quantiles,)
+        Quantiles from the Gaussian baseline.
+    - quantile_level: float
+        The desired quantile level (e.g., 0.05 for 5%).
+    - quant_probs: array-like, shape (n_quantiles,)
+        List of quantile levels corresponding to the predicted and baseline quantiles.
+
+    Returns:
+    - var_distance_results: dict
+        Dictionary containing the deviation from the desired quantile level for the predicted VaR and baseline VaR.
+    """
+    # Find the index of the desired quantile level
+    quantile_idx = quant_probs.index(quantile_level)
+
+    # Predicted VaR
+    var_predicted = predicted_quantiles[quantile_idx]
+
+    # Baseline (Gaussian) VaR
+    var_baseline = baseline_quantiles[quantile_idx]
+
+    var_hybrid = hybrid_quantiles[quantile_idx]
+
+    # Count violations: observed returns less than the predicted/baseline VaR
+    predicted_violations = np.sum(observed_returns < var_predicted)
+    baseline_violations = np.sum(observed_returns < var_baseline)
+    hybrid_violations = np.sum(observed_returns < var_hybrid)
+
+    # Total number of observations
+    total_observations = len(observed_returns)
+
+    # Calculate violation rates
+    violation_rate_predicted = predicted_violations / total_observations
+    violation_rate_baseline = baseline_violations / total_observations
+    violation_rate_hybrid = hybrid_violations / total_observations
+
+    # Calculate the distance from the desired quantile level
+    distance_predicted = abs(violation_rate_predicted - quantile_level)
+    distance_baseline = abs(violation_rate_baseline - quantile_level)
+    distance_hybrid = abs(violation_rate_hybrid - quantile_level)
+
+    # Compile results
+    var_distance_results = {
+        "var_error_predicted": distance_predicted,
+        "var_error_baseline": distance_baseline,
+        "var_error_hybrid": distance_hybrid
+    }
+
+    return var_distance_results
 
 
 def quantiles_to_pdf_kde(quantiles, probs=None):
