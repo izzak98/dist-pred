@@ -1,8 +1,12 @@
 """Module to load the best model from the Optuna study."""
+import json
 from typing import Union, Any
 import optuna
 from LSTM import LSTM_Model
 from Dense import QuantileDense
+
+with open('config.json', encoding="utf8") as f:
+    CONFIG = json.load(f)
 
 
 def load_best_model(model_name) -> tuple[Union[LSTM_Model, QuantileDense], dict[str, Any]]:
@@ -23,7 +27,7 @@ def load_best_model(model_name) -> tuple[Union[LSTM_Model, QuantileDense], dict[
     study_name = "LSTM" if model_name.lower() == 'lstm' else "Dense"
     study = optuna.load_study(
         study_name=study_name,
-        storage=f"sqlite:///{study_name}.db"
+        storage=CONFIG["general"]["db_path"]
     )
 
     best_params = study.best_params
