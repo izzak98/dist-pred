@@ -95,7 +95,8 @@ class DistDataset(Dataset):
                  normalization_lookback: int,
                  start_date: str,
                  end_date: str,
-                 lookahead: Optional[int] = None
+                 lookahead: Optional[int] = None,
+                 flow: Optional[bool] = False
                  ) -> None:
         self.datas = datas
         self.market_data = market_data
@@ -111,8 +112,10 @@ class DistDataset(Dataset):
         self.s = []
         self.z = []
         self.y = []
+        self.observed_returns = []
         self.cat = []
         self.asset_name = []
+        self.flow = flow
 
         self.lookahead = lookahead
 
@@ -148,6 +151,7 @@ class DistDataset(Dataset):
                                     & set(self.market_data.index))
                 df = df.loc[shared_index]
                 df = df.sort_index()
+                self.df = df
                 returns = df["return_2d"]
                 rolling_mean = df.rolling(
                     window=self.normalization_lookback).mean()
@@ -166,7 +170,7 @@ class DistDataset(Dataset):
                 normalized_df = normalized_df.loc[start_date:end_date]
                 while True:
                     if self.lookahead is None:
-                        lookforward = np.random.randint(1, 30)
+                        lookforward = np.random.randint(15, 30)
                     else:
                         lookforward = self.lookahead
                     if len(normalized_df) < 5:
@@ -178,6 +182,9 @@ class DistDataset(Dataset):
                     s = cross_vol.loc[x.index].mean()
                     z = x.index
                     y = returns.loc[y_index]
+                    if self.flow:
+                        observed_returns = self.df["return_2d"].loc[y_index]
+                        self.observed_returns.append(observed_returns)
 
                     cat = [0] * len(self.datas.keys())
                     cat[list(self.datas.keys()).index(grouping)] = 1
@@ -211,8 +218,12 @@ class DistDataset(Dataset):
                 self.cat[idx], dtype=torch.float32).to(DEVICE)
         x = torch.cat((x, self.cat[idx].repeat(x.size(0), 1)), dim=1)
         z = torch.cat((z, self.cat[idx].repeat(z.size(0), 1)), dim=1)
-
-        return x, s, z, y, sy
+        if self.flow:
+            observed_returns = torch.tensor(
+                self.observed_returns[idx].values, dtype=torch.float32).to(DEVICE).view(-1, 1)
+            return x, s, z, y, observed_returns
+        else:
+            return x, s, z, y, sy
 
 
 class StaticDistDataset(Dataset):
@@ -378,7 +389,8 @@ class TestDataset(Dataset):
                  normalization_lookback: int,
                  start_date: str,
                  end_date: str,
-                 lookforward: int
+                 lookforward: int,
+                 test: bool = False
                  ) -> None:
         super().__init__()
         self.datas = datas
@@ -402,6 +414,9 @@ class TestDataset(Dataset):
         self.cat = []
 
         self.lookforward = lookforward
+
+        self.test = test
+        self.df = None
 
         self.gen_data()
 
@@ -450,6 +465,7 @@ class TestDataset(Dataset):
 
         df = data.loc[shared_index]
         df = df.sort_index()
+        self.df = df
         returns = df["return_2d"].shift(-self.lookforward)
         rolling_mean = df.rolling(window=self.normalization_lookback).mean()
         rolling_std = df.rolling(window=self.normalization_lookback).std()
@@ -500,7 +516,14 @@ class TestDataset(Dataset):
         x = torch.cat((x, self.cat[idx].repeat(x.size(0), 1)), dim=1)
         z = torch.cat((z, self.cat[idx].repeat(z.size(0), 1)), dim=1)
 
-        return x, s, z, y, sy
+        if not self.test:
+            return x, s, z, y, sy
+        else:
+            assert self.df is not None
+            sub_observed_returns = self.df["return_2d"].loc[self.z[idx]]
+            observed_returns = torch.tensor(
+                sub_observed_returns.values, dtype=torch.float32).to(DEVICE).view(-1, 1)
+            return x, s, z, y, observed_returns
 
 
 class DynamicBatchSampler:
@@ -584,7 +607,8 @@ def get_dataset(
     normalization_lookback: int,
     start_date: str,
     end_date: str,
-    lookahead: Optional[int] = None
+    lookahead: Optional[int] = None,
+    flow: Optional[bool] = False
 ) -> DistDataset:
     """Get the dataset for training and validation."""
 
@@ -600,7 +624,7 @@ def get_dataset(
     market_data = pd.read_csv(os.path.join('data', 'market_data',
                               'market_data.csv'), index_col=0, parse_dates=True)
     dataset = DistDataset(
-        datas, market_data, normalization_lookback, start_date, end_date, lookahead)
+        datas, market_data, normalization_lookback, start_date, end_date, lookahead, flow)
     return dataset
 
 
@@ -630,7 +654,8 @@ def get_test_dataset(
     normalization_lookback: int,
     start_date: str,
     end_date: str,
-    lookforward: int = 22
+    lookforward: int = 22,
+    test: bool = False
 ) -> TestDataset:
     """Get the test dataset for testing."""
     folders = os.listdir('data')
@@ -645,7 +670,7 @@ def get_test_dataset(
     market_data = pd.read_csv(os.path.join('data', 'market_data',
                               'market_data.csv'), index_col=0, parse_dates=True)
     dataset = TestDataset(
-        datas, market_data, normalization_lookback, start_date, end_date, lookforward)
+        datas, market_data, normalization_lookback, start_date, end_date, lookforward, test)
     return dataset
 
 
