@@ -184,10 +184,10 @@ def test_functionality() -> None:
         "layer_norm": True
     }
     normalization_window = 100
-    batch_size = 1024
+    batch_size = 256
     learning_rate = 1e-3
-    l1_reg = 0.2
-    l2_reg = 0.2
+    l1_reg = 0.002
+    l2_reg = 0.002
 
     model = QuantileDense(**model_test_params).to(DEVICE)
     print(model)

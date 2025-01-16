@@ -115,7 +115,7 @@ class LSTM_Model(nn.Module):
         normalized_output, _ = torch.sort(normalized_output, dim=1)
 
         # Apply scaling factor from 's'
-        new_output = s * normalized_output
+        new_output = normalized_output  # * s
 
         # Market LSTM stage
         market_lstm_output, _ = self.market_lstm(z)
@@ -210,7 +210,7 @@ def objective(trial) -> float:
         num_epochs=100,
         patience=10,
         l1_reg=l1_reg,
-        lstm=True,
+        lstm=False,
         verbose=False
     )
     return best_loss
