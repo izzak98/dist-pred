@@ -108,6 +108,7 @@
             5,
             22
         ],
+        "db_path": "sqlite:///optuna.db",
         "seed": 271198,
         "quantiles": [
             0.00005,
